@@ -300,6 +300,48 @@ function EmulatorInner() {
           )}
         </div>
 
+        {arch === "aarch64" && (
+          <div className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 p-5">
+            <h2 className="text-sm font-semibold text-amber-500">
+              ARM64 core — build the QEMU-Wasm artifact first
+            </h2>
+            <p className="mt-2 text-xs text-muted-foreground">
+              The aarch64 core uses{" "}
+              <span className="font-mono">qemu-wasm</span> (QEMU with a TCG→WASM
+              JIT backend). Its binary is a multi-hour emscripten build, so it
+              can&apos;t be compiled in this chat — build it once in CI, host the
+              output (CORS-enabled), and paste the base URL above. It already
+              boots aarch64 Linux in a browser today:
+            </p>
+            <a
+              href="https://ktock.github.io/qemu-wasm-demo/raspi3ap.html"
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-block text-xs font-medium text-primary underline"
+            >
+              ▸ Live proof: AArch64 Raspberry Pi booting in-browser (QEMU-Wasm)
+            </a>
+            <pre className="mt-3 overflow-x-auto rounded-md bg-black p-3 text-[11px] leading-relaxed text-green-400">
+{`# Build QEMU-Wasm (aarch64) — run in CI / a Linux box with Docker
+git clone https://github.com/ktock/qemu-wasm
+cd qemu-wasm
+# builds emscripten glue (out.js) + qemu wasm with the Wasm TCG JIT backend
+docker build --output=./out -f Dockerfile .
+# host ./out (out.js, *.wasm, kernel + rootfs) behind a CORS-enabled URL,
+# then paste that base URL into the field above and press Boot.`}
+            </pre>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Cross-origin isolation note: QEMU-Wasm uses threads
+              (SharedArrayBuffer), so the host must send{" "}
+              <span className="font-mono">
+                COOP: same-origin
+              </span>{" "}
+              +{" "}
+              <span className="font-mono">COEP: require-corp</span> headers.
+            </p>
+          </div>
+        )}
+
         <div className="grid gap-6 md:grid-cols-2">
           <div className="rounded-lg border border-border bg-black p-2">
             <p className="mb-2 px-1 text-xs font-mono text-muted-foreground">
