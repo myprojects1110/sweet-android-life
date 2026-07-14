@@ -23,7 +23,8 @@ mkdir -p "${DEST}"
 
 # 1. Get the upstream qemu-wasm source (carries the Wasm TCG JIT patches).
 if [ ! -d "${QEMU_WASM_REPO}/.git" ]; then
-  git clone --depth 1 https://github.com/ktock/qemu-wasm.git "${QEMU_WASM_REPO}"
+  git clone --depth 1 --recurse-submodules --shallow-submodules \
+    https://github.com/ktock/qemu-wasm.git "${QEMU_WASM_REPO}"
 fi
 
 # 1b. Patch upstream's Dockerfile: zlib.net currently returns a 404 page for
