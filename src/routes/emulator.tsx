@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ClientOnly } from "@tanstack/react-router";
 import { useEffect, useRef, useState, useCallback } from "react";
+import linuxImage from "../assets/linux.iso.asset.json";
+import seabios from "../assets/seabios.bin.asset.json";
+import vgabios from "../assets/vgabios.bin.asset.json";
 
 export const Route = createFileRoute("/emulator")({
   head: () => ({
@@ -22,13 +25,12 @@ export const Route = createFileRoute("/emulator")({
   component: EmulatorPage,
 });
 
-const V86_SCRIPT = "https://cdn.jsdelivr.net/npm/v86@0.10.1/build/libv86.js";
-const V86_WASM = "https://cdn.jsdelivr.net/npm/v86@0.10.1/build/v86.wasm";
-const BIOS = "https://cdn.jsdelivr.net/npm/v86@0.10.1/bios/seabios.bin";
-const VGA_BIOS = "https://cdn.jsdelivr.net/npm/v86@0.10.1/bios/vgabios.bin";
-// Small buildroot Linux (boots to a shell) — CORS-enabled demo asset.
-const DEFAULT_IMAGE =
-  "https://k.copy.sh/linux.iso";
+const V86_SCRIPT = "https://cdn.jsdelivr.net/npm/v86@0.5.424/build/libv86.js";
+const V86_WASM = "https://cdn.jsdelivr.net/npm/v86@0.5.424/build/v86.wasm";
+const BIOS = seabios.url;
+const VGA_BIOS = vgabios.url;
+// Small bootable Linux ISO, served same-origin from Lovable's CDN (no CORS issues).
+const DEFAULT_IMAGE = linuxImage.url;
 
 declare global {
   interface Window {
@@ -84,6 +86,18 @@ function EmulatorInner() {
     setSerial("");
     setStatus("loading");
     try {
+      // v86's bundle references Node globals; provide them in the browser.
+      const w = window as unknown as {
+        global: Window;
+        setImmediate?: (fn: (...a: unknown[]) => void, ...a: unknown[]) => number;
+        clearImmediate?: (id: number) => void;
+      };
+      w.global = window;
+      if (typeof w.setImmediate !== "function") {
+        w.setImmediate = (fn, ...a) =>
+          window.setTimeout(fn, 0, ...a) as unknown as number;
+        w.clearImmediate = (id) => window.clearTimeout(id);
+      }
       await loadScript(V86_SCRIPT);
       const V86 = window.V86;
       if (!V86) throw new Error("v86 failed to initialize");
