@@ -63,8 +63,13 @@ function EmulatorInner() {
   const [status, setStatus] = useState<
     "idle" | "loading" | "running" | "error"
   >("idle");
+  const [arch, setArch] = useState<"x86_64" | "aarch64">("x86_64");
   const [imageUrl, setImageUrl] = useState(DEFAULT_IMAGE);
   const [imageKind, setImageKind] = useState<"cdrom" | "hda">("cdrom");
+  // ARM64 (QEMU-Wasm) artifact base URL, e.g. https://your-host/qemu-aarch64/
+  // Must contain the emscripten glue (out.js) + .wasm produced by a
+  // qemu-wasm (TCG→WASM JIT) build. Left blank until an artifact is hosted.
+  const [qemuBase, setQemuBase] = useState("");
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
