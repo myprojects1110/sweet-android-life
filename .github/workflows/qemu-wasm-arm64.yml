@@ -1,0 +1,59 @@
+name: Build QEMU-Wasm ARM64 core
+
+# Builds the aarch64 QEMU-Wasm artifact and publishes it to GitHub Pages.
+# After a successful run, copy the Pages URL into the Emulator Lab's aarch64
+# core field (/emulator). This is a long build — expect it to run for a while.
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "arm64-core/**"
+      - ".github/workflows/qemu-wasm-arm64.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: qemu-wasm-arm64
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build QEMU-Wasm ARM64 artifact
+        run: |
+          docker build -t qemu-wasm-arm64 ./arm64-core
+          docker create --name qw qemu-wasm-arm64
+          docker cp qw:/out ./out
+          docker rm qw
+          ls -lh ./out
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
