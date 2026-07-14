@@ -77,11 +77,22 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
-      { name: "description", content: "Lovable Generated Project" },
+      { title: "Android in the Browser — Emulation Research Lab" },
+      {
+        name: "description",
+        content:
+          "Booting a software-emulated OS inside a browser tab — the foundation for running unmodified AOSP Android 17 in-browser.",
+      },
       { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
-      { property: "og:description", content: "Lovable Generated Project" },
+      {
+        property: "og:title",
+        content: "Android in the Browser — Emulation Research Lab",
+      },
+      {
+        property: "og:description",
+        content:
+          "A WASM software-CPU boot harness and roadmap toward in-browser AOSP Android 17.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },
