@@ -23,7 +23,8 @@ mkdir -p "${DEST}"
 
 # 1. Get the upstream qemu-wasm source (carries the Wasm TCG JIT patches).
 if [ ! -d "${QEMU_WASM_REPO}/.git" ]; then
-  git clone --depth 1 https://github.com/ktock/qemu-wasm.git "${QEMU_WASM_REPO}"
+  git clone --depth 1 --recurse-submodules --shallow-submodules \
+    https://github.com/ktock/qemu-wasm.git "${QEMU_WASM_REPO}"
 fi
 
 # 1b. Patch upstream's Dockerfile: zlib.net currently returns a 404 page for
@@ -38,9 +39,13 @@ sed -i \
 docker build -t buildqemu-arm64 - < "${QEMU_WASM_REPO}/Dockerfile"
 
 # 3. Start the build container (detached; no -it so it works in CI).
+#    Mount the source READ-WRITE: for the aarch64 target QEMU needs libfdt and,
+#    when it isn't found on the system, meson builds the bundled `dtc` meson
+#    subproject with `git init dtc` inside the source tree. A read-only mount
+#    makes that mkdir fail ("cannot mkdir dtc: Read-only file system").
 docker rm -f "${BUILD_CONTAINER_NAME}" >/dev/null 2>&1 || true
 docker run --rm -d --name "${BUILD_CONTAINER_NAME}" \
-  -v "${QEMU_WASM_REPO}":/qemu/:ro buildqemu-arm64
+  -v "${QEMU_WASM_REPO}":/qemu/ buildqemu-arm64
 
 cleanup() { docker rm -f "${BUILD_CONTAINER_NAME}" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
