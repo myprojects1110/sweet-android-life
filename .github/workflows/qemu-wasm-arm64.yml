@@ -36,16 +36,14 @@ jobs:
 
       - name: Build QEMU-Wasm ARM64 artifact
         run: |
-          docker build -t qemu-wasm-arm64 ./arm64-core
-          docker create --name qw qemu-wasm-arm64
-          docker cp qw:/out ./out
-          docker rm qw
-          ls -lh ./out
+          chmod +x ./arm64-core/build.sh
+          ./arm64-core/build.sh
+          ls -lh ./arm64-core/out
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./out
+          path: ./arm64-core/out
 
   deploy:
     needs: build

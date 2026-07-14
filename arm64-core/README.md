@@ -2,8 +2,14 @@
 
 This directory builds the **aarch64 (ARM64) CPU core** used by the Emulator Lab
 (`/emulator` → `aarch64` tab). It compiles [`ktock/qemu-wasm`](https://github.com/ktock/qemu-wasm)
-(QEMU with a **TCG → WebAssembly JIT** backend) to WebAssembly, bundles a
-bootable ARM64 Linux kernel + rootfs, and publishes the result to a static host.
+(QEMU with a **TCG → WebAssembly JIT** backend, multi-threaded) to WebAssembly
+and packages a bootable ARM64 Linux guest, then publishes the result to a static
+host.
+
+The build **exactly mirrors upstream's tested flow** — `build.sh` reproduces
+`ktock/qemu-wasm-demo`'s `create-images.sh` for the AArch64 `raspi3ap` target
+(the working in-browser ARM64 Linux boot). We do **not** invent kernel/rootfs
+URLs; the guest image is built from `qemu-wasm/examples/raspi3ap/image/`.
 
 > The build is a multi-hour emscripten + Docker compile. It **cannot** run in
 > the Lovable chat sandbox — run it in CI (GitHub Actions config included) or on
@@ -13,11 +19,13 @@ bootable ARM64 Linux kernel + rootfs, and publishes the result to a static host.
 
 ```
 out/
-  out.js         # emscripten glue loaded by the Emulator Lab
-  out.wasm       # QEMU compiled to WebAssembly (TCG→WASM JIT)
-  Image          # ARM64 Linux kernel
-  rootfs.bin     # root filesystem
-  coi-serviceworker.min.js  # injects COOP/COEP on hosts that can't set headers
+  out.js                     # emscripten glue (qemu-system-aarch64) loaded by the Lab
+  qemu-system-aarch64.wasm   # QEMU compiled to WebAssembly (TCG→WASM JIT)
+  qemu-system-aarch64.worker.js
+  qemu-system-aarch64.data   # packaged guest image (BusyBox + Linux)
+  load.js                    # file_packager loader for the .data image
+  _headers                   # COOP/COEP for hosts that honor custom headers
+  coi-serviceworker.min.js   # header fallback for hosts that can't (GitHub Pages)
 ```
 
 ## Cross-origin isolation (required)
@@ -35,21 +43,12 @@ Cross-Origin-Embedder-Policy: require-corp
 - Hosts that don't (GitHub Pages): the emitted `coi-serviceworker.min.js`
   registers a service worker that re-serves the page with those headers.
 
-The assets must also be reachable **CORS-enabled** from the Lovable app origin
-(the service worker / `_headers` already send `Access-Control-Allow-Origin: *`
-for same-site; for a different origin, ensure the host adds it).
-
 ## Local build
 
 ```bash
 cd arm64-core
-docker build -t qemu-wasm-arm64 .
-# extract the built artifact
-docker create --name qw qemu-wasm-arm64
-docker cp qw:/out ./out
-docker rm qw
-# serve locally with isolation headers, then point the Lab at it
-python3 serve.py   # http://localhost:8000/  (sends COOP/COEP)
+./build.sh              # clones qemu-wasm, compiles, packages -> ./out
+python3 serve.py        # http://localhost:8000/  (sends COOP/COEP)
 ```
 
 Then in the app: open `/emulator`, pick **aarch64**, paste the base URL
@@ -57,5 +56,6 @@ Then in the app: open `/emulator`, pick **aarch64**, paste the base URL
 
 ## CI
 
-`.github/workflows/qemu-wasm-arm64.yml` runs the same build and deploys `out/`
-to GitHub Pages. After it runs, paste the Pages URL into the aarch64 core field.
+`.github/workflows/qemu-wasm-arm64.yml` runs the same `build.sh` and deploys
+`out/` to GitHub Pages. After it runs, paste the Pages URL into the aarch64
+core field.
