@@ -26,6 +26,12 @@ if [ ! -d "${QEMU_WASM_REPO}/.git" ]; then
   git clone --depth 1 https://github.com/ktock/qemu-wasm.git "${QEMU_WASM_REPO}"
 fi
 
+# 1b. Patch upstream's Dockerfile: zlib.net drops old tarballs from its root
+#     (curl then downloads an HTML error page and `tar xJ` fails with
+#     "File format not recognized"). Point the zlib fetch at the permanent
+#     /fossils/ archive, which keeps every released version.
+sed -i 's#zlib\.net/zlib-#zlib.net/fossils/zlib-#g' "${QEMU_WASM_REPO}/Dockerfile"
+
 # 2. Build the emscripten build environment image from upstream's Dockerfile.
 docker build -t buildqemu-arm64 - < "${QEMU_WASM_REPO}/Dockerfile"
 
