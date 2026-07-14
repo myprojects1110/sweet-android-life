@@ -63,15 +63,61 @@ docker exec "${BUILD_CONTAINER_NAME}" emconfigure /qemu/configure \
   --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY"
 docker exec "${BUILD_CONTAINER_NAME}" emmake make -j "$(nproc)" qemu-system-aarch64
 
-# 5. Build the guest image (BusyBox + Linux for the raspi3ap machine) and
-#    package it into the emscripten virtual FS.
+# 5. Build the guest image (BusyBox initramfs + kernel + DTB for raspi3ap).
+#    Upstream's Dockerfile emits kernel8.img, bcm2710-rpi-3-b-plus.dtb, and a
+#    tiny BusyBox rootfs.bin. We keep the kernel/DTB and REPLACE rootfs.bin
+#    with a real Alpine Linux aarch64 rootfs (Stage 2 toward Android) so the
+#    guest has a working userland with apk, a package manager, and room to
+#    install more software instead of only a 3.7 MB read-only initramfs.
 TMPDIR="$(mktemp -d)"
 mkdir "${TMPDIR}/pack"
 docker build --output=type=local,dest="${TMPDIR}/pack" \
   "${QEMU_WASM_REPO}/examples/raspi3ap/image/"
+
+# 5b. Build the Alpine aarch64 rootfs ext4 image, overwriting rootfs.bin.
+#     Runs inside an alpine:latest container so we have apk, e2fsprogs
+#     (mke2fs -d populates an ext4 from a directory with no loop mount / no
+#     root on the host), curl and tar available regardless of CI runner.
+ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
+ALPINE_PATCH="${ALPINE_PATCH:-3.20.3}"
+ALPINE_ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/aarch64/alpine-minirootfs-${ALPINE_PATCH}-aarch64.tar.gz"
+ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-192}"
+
+docker run --rm -v "${TMPDIR}/pack":/pack alpine:latest /bin/sh -euxc "
+  apk add --no-cache curl tar e2fsprogs
+  mkdir -p /rootfs
+  curl -fsSL '${ALPINE_ROOTFS_URL}' | tar -xz -C /rootfs
+
+  # Serial console: raspi3ap exposes ttyAMA0. Spawn a getty there so the
+  # user gets a login prompt after boot, and skip tty1..tty6 (no VT).
+  cat > /rootfs/etc/inittab <<'EOF'
+::sysinit:/sbin/openrc sysinit
+::sysinit:/sbin/openrc boot
+::wait:/sbin/openrc default
+ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
+::ctrlaltdel:/sbin/reboot
+::shutdown:/sbin/openrc shutdown
+EOF
+
+  # Root has no password (dev image; the guest is sandboxed in a browser tab).
+  sed -i 's|^root:[^:]*:|root::|' /rootfs/etc/shadow
+
+  # Reasonable defaults so networking / dns work if we wire -nic later.
+  echo 'nameserver 1.1.1.1' > /rootfs/etc/resolv.conf
+  echo 'alpine-arm64' > /rootfs/etc/hostname
+
+  # Build a sparse ext4 image populated from /rootfs. -F to skip the
+  # 'not a block device' prompt, -E no_copy_xattrs to avoid host xattr noise.
+  truncate -s ${ROOTFS_SIZE_MB}M /pack/rootfs.bin
+  mkfs.ext4 -F -L alpine-root -d /rootfs -E no_copy_xattrs /pack/rootfs.bin
+"
+
+ls -lh "${TMPDIR}/pack"
+
 docker cp "${TMPDIR}/pack" "${BUILD_CONTAINER_NAME}":/
 docker exec "${BUILD_CONTAINER_NAME}" /bin/sh -c \
   "/emsdk/upstream/emscripten/tools/file_packager.py qemu-system-aarch64.data --preload /pack > load.js"
+
 
 # 6. Collect the publishable artifact set into out/.
 docker cp "${BUILD_CONTAINER_NAME}":/build/qemu-system-aarch64 "${DEST}/out.js"
