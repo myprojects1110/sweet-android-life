@@ -168,6 +168,7 @@ function EmulatorInner() {
   const serialRef = useRef<HTMLTextAreaElement>(null);
   const emuRef = useRef<V86Instance | null>(null);
   const arm64PtyRef = useRef<PseudoPty | null>(null);
+  const arm64WorkerUrlRef = useRef<string | null>(null);
   const [status, setStatus] = useState<
     "idle" | "loading" | "running" | "error"
   >("idle");
@@ -238,6 +239,22 @@ function EmulatorInner() {
         arm64PtyRef.current?.dispose();
         const pty = createTextAreaPty(appendSerial);
         arm64PtyRef.current = pty;
+        if (arm64WorkerUrlRef.current) {
+          URL.revokeObjectURL(arm64WorkerUrlRef.current);
+          arm64WorkerUrlRef.current = null;
+        }
+        const workerResponse = await fetch(base + "qemu-system-aarch64.worker.js", {
+          mode: "cors",
+        });
+        if (!workerResponse.ok) {
+          throw new Error(
+            `Failed to load QEMU-Wasm worker (${workerResponse.status}) from ${base}`,
+          );
+        }
+        const workerUrl = URL.createObjectURL(
+          new Blob([await workerResponse.text()], { type: "text/javascript" }),
+        );
+        arm64WorkerUrlRef.current = workerUrl;
         appendSerial(
           `[harness] loading ARM64 QEMU-Wasm package from ${base}load.js …\n`,
         );
@@ -267,7 +284,8 @@ function EmulatorInner() {
           pty,
           print: (line: string) => appendSerial(line + "\n"),
           printErr: (line: string) => appendSerial(line + "\n"),
-          locateFile: (p: string) => base + p,
+          locateFile: (p: string) =>
+            p === "qemu-system-aarch64.worker.js" ? workerUrl : base + p,
           onRuntimeInitialized: () => setStatus("running"),
         };
         w.Module = moduleConfig;
@@ -333,6 +351,10 @@ function EmulatorInner() {
     emuRef.current = null;
     arm64PtyRef.current?.dispose();
     arm64PtyRef.current = null;
+    if (arm64WorkerUrlRef.current) {
+      URL.revokeObjectURL(arm64WorkerUrlRef.current);
+      arm64WorkerUrlRef.current = null;
+    }
     setStatus("idle");
   }, []);
 
@@ -340,6 +362,7 @@ function EmulatorInner() {
     () => () => {
       emuRef.current?.destroy?.();
       arm64PtyRef.current?.dispose();
+      if (arm64WorkerUrlRef.current) URL.revokeObjectURL(arm64WorkerUrlRef.current);
     },
     [],
   );
