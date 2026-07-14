@@ -180,52 +180,91 @@ function EmulatorInner() {
       <div className="mx-auto max-w-5xl px-4 py-10">
         <header className="mb-8">
           <p className="text-xs font-mono uppercase tracking-widest text-muted-foreground">
-            Research track · Milestone 1
+            Research track · Milestone 1–2 · multi-core
           </p>
           <h1 className="mt-1 text-3xl font-bold tracking-tight">
             In-browser Emulator Lab
           </h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
             A full OS booting inside a browser tab on a software-emulated CPU
-            (WASM). This proves the CPU + virtio-to-browser display / serial /
-            input loop end to end. The x86 core here is the placeholder; the
-            ARM64 TCG→WASM JIT backend replaces it later without touching this
-            device layer.
+            (WASM). Two pluggable cores share one device / display / serial /
+            input layer: <span className="text-foreground">x86_64 (v86)</span>,
+            working today, and{" "}
+            <span className="text-foreground">aarch64 (QEMU-Wasm, TCG→WASM JIT)</span>{" "}
+            — the ARM64 path toward Android 17.
           </p>
         </header>
 
         <div className="mb-6 rounded-lg border border-border bg-card p-4">
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="flex-1 min-w-[260px]">
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                OS image URL (must be CORS-enabled)
-              </label>
-              <input
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                placeholder="https://…/linux.iso"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Attach as
-              </label>
-              <select
-                value={imageKind}
-                onChange={(e) =>
-                  setImageKind(e.target.value as "cdrom" | "hda")
-                }
-                className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+          <div className="mb-4 flex flex-wrap gap-2">
+            {(["x86_64", "aarch64"] as const).map((a) => (
+              <button
+                key={a}
+                onClick={() => setArch(a)}
+                className={`rounded-md border px-3 py-1.5 text-xs font-mono transition-colors ${
+                  arch === a
+                    ? "border-primary bg-primary text-primary-foreground"
+                    : "border-input bg-background hover:bg-accent"
+                }`}
               >
-                <option value="cdrom">CD-ROM (.iso)</option>
-                <option value="hda">Hard disk (.img)</option>
-              </select>
-            </div>
+                {a}
+                {a === "x86_64" ? " ✓" : " ⚙"}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            {arch === "x86_64" ? (
+              <>
+                <div className="flex-1 min-w-[260px]">
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    OS image URL (must be CORS-enabled)
+                  </label>
+                  <input
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    placeholder="https://…/linux.iso"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    Attach as
+                  </label>
+                  <select
+                    value={imageKind}
+                    onChange={(e) =>
+                      setImageKind(e.target.value as "cdrom" | "hda")
+                    }
+                    className="rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  >
+                    <option value="cdrom">CD-ROM (.iso)</option>
+                    <option value="hda">Hard disk (.img)</option>
+                  </select>
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 min-w-[260px]">
+                <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                  QEMU-Wasm artifact base URL (CORS-enabled; contains out.js +
+                  .wasm)
+                </label>
+                <input
+                  value={qemuBase}
+                  onChange={(e) => setQemuBase(e.target.value)}
+                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                  placeholder="https://your-host/qemu-aarch64/"
+                />
+              </div>
+            )}
             <div className="flex gap-2">
               <button
                 onClick={boot}
-                disabled={status === "loading" || status === "running"}
+                disabled={
+                  status === "loading" ||
+                  status === "running" ||
+                  (arch === "aarch64" && !qemuBase.trim())
+                }
                 className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
               >
                 {status === "loading" ? "Booting…" : "Boot"}
