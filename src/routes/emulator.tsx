@@ -27,6 +27,8 @@ export const Route = createFileRoute("/emulator")({
 
 const V86_SCRIPT = "https://cdn.jsdelivr.net/npm/v86@0.5.424/build/libv86.js";
 const V86_WASM = "https://cdn.jsdelivr.net/npm/v86@0.5.424/build/v86.wasm";
+const COI_SCRIPT = "/coi-serviceworker.min.js";
+const DEFAULT_QEMU_BASE = "https://myprojects1110.github.io/sweet-android-life/";
 const BIOS = seabios.url;
 const VGA_BIOS = vgabios.url;
 // Small bootable Linux ISO, served same-origin from Lovable's CDN (no CORS issues).
@@ -45,21 +47,127 @@ type V86Instance = {
   keyboard_send_scancodes?: (codes: number[]) => void;
 };
 
+type Listener<T> = (value: T) => void;
+
+type PseudoPty = {
+  readonly readable: boolean;
+  readonly writable: boolean;
+  read: (length?: number) => number[];
+  write: (arg: string | number[]) => void;
+  ioctl: (req: "TCGETS" | "TCSETS" | "TIOCGWINSZ", arg?: unknown) => unknown;
+  onReadable: (listener: Listener<void>) => { dispose: () => void };
+  onSignal: (listener: Listener<"SIGINT" | "SIGQUIT" | "SIGTSTP" | "SIGWINCH">) => {
+    dispose: () => void;
+  };
+  pushInput: (text: string) => void;
+  dispose: () => void;
+};
+
+type EmscriptenModuleConfig = Record<string, unknown> & {
+  pty?: PseudoPty;
+  TTY?: { stream_ops?: { poll?: unknown } };
+};
+
+function createEmitter<T>() {
+  const listeners = new Set<Listener<T>>();
+  return {
+    register(listener: Listener<T>) {
+      listeners.add(listener);
+      return { dispose: () => listeners.delete(listener) };
+    },
+    fire(value: T) {
+      listeners.forEach((listener) => listener(value));
+    },
+    clear() {
+      listeners.clear();
+    },
+  };
+}
+
+function createTextAreaPty(appendOutput: (text: string) => void): PseudoPty {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const inputQueue: number[] = [];
+  const readable = createEmitter<void>();
+  const signals = createEmitter<"SIGINT" | "SIGQUIT" | "SIGTSTP" | "SIGWINCH">();
+  let termios = {
+    iflag: 0,
+    oflag: 1,
+    cflag: 0,
+    lflag: 0,
+    cc: Array.from({ length: 32 }, () => 0),
+    clone() {
+      return { ...this, cc: [...this.cc], clone: this.clone };
+    },
+  };
+
+  return {
+    get readable() {
+      return inputQueue.length > 0;
+    },
+    get writable() {
+      return true;
+    },
+    read(length = inputQueue.length) {
+      return inputQueue.splice(0, Math.max(0, length));
+    },
+    write(arg) {
+      const bytes = typeof arg === "string" ? encoder.encode(arg) : new Uint8Array(arg);
+      appendOutput(decoder.decode(bytes, { stream: true }));
+    },
+    ioctl(req, arg) {
+      if (req === "TCGETS") return termios.clone();
+      if (req === "TCSETS" && arg && typeof arg === "object") {
+        const next = arg as { iflag?: number; oflag?: number; cflag?: number; lflag?: number; cc?: number[] };
+        termios = {
+          iflag: next.iflag ?? termios.iflag,
+          oflag: next.oflag ?? termios.oflag,
+          cflag: next.cflag ?? termios.cflag,
+          lflag: next.lflag ?? termios.lflag,
+          cc: next.cc ? [...next.cc] : termios.cc,
+          clone: termios.clone,
+        };
+        return undefined;
+      }
+      if (req === "TIOCGWINSZ") return [80, 24];
+      return undefined;
+    },
+    onReadable: readable.register,
+    onSignal: signals.register,
+    pushInput(text) {
+      inputQueue.push(...encoder.encode(text));
+      readable.fire(undefined);
+    },
+    dispose() {
+      readable.clear();
+      signals.clear();
+      inputQueue.length = 0;
+    },
+  };
+}
+
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) return resolve();
     const s = document.createElement("script");
     s.src = src;
+    s.crossOrigin = "anonymous";
     s.onload = () => resolve();
     s.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.head.appendChild(s);
   });
 }
 
+async function installCrossOriginIsolationServiceWorker() {
+  if (window.crossOriginIsolated || !("serviceWorker" in navigator)) return;
+  await loadScript(COI_SCRIPT);
+}
+
 function EmulatorInner() {
   const screenRef = useRef<HTMLDivElement>(null);
   const serialRef = useRef<HTMLTextAreaElement>(null);
   const emuRef = useRef<V86Instance | null>(null);
+  const arm64PtyRef = useRef<PseudoPty | null>(null);
   const [status, setStatus] = useState<
     "idle" | "loading" | "running" | "error"
   >("idle");
@@ -69,7 +177,7 @@ function EmulatorInner() {
   // ARM64 (QEMU-Wasm) artifact base URL, e.g. https://your-host/qemu-aarch64/
   // Must contain the emscripten glue (out.js) + .wasm produced by a
   // qemu-wasm (TCG→WASM JIT) build. Left blank until an artifact is hosted.
-  const [qemuBase, setQemuBase] = useState("");
+  const [qemuBase, setQemuBase] = useState(DEFAULT_QEMU_BASE);
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
@@ -85,6 +193,12 @@ function EmulatorInner() {
     const el = serialRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [serial]);
+
+  useEffect(() => {
+    installCrossOriginIsolationServiceWorker().catch((e) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }, []);
 
   const boot = useCallback(async () => {
     setError(null);
@@ -115,17 +229,68 @@ function EmulatorInner() {
             "Set the QEMU-Wasm artifact base URL to boot the ARM64 core.",
           );
         }
+        if (!window.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
+          await installCrossOriginIsolationServiceWorker();
+          throw new Error(
+            "Threaded WebAssembly is being prepared. If the page does not reload automatically, hard-refresh it and press Boot again.",
+          );
+        }
+        arm64PtyRef.current?.dispose();
+        const pty = createTextAreaPty(appendSerial);
+        arm64PtyRef.current = pty;
         appendSerial(
-          `[harness] loading ARM64 QEMU-Wasm core from ${base}out.js …\n`,
+          `[harness] loading ARM64 QEMU-Wasm package from ${base}load.js …\n`,
         );
-        w.Module = {
-          canvas: screenRef.current?.querySelector("canvas") ?? undefined,
+        const moduleConfig: EmscriptenModuleConfig = {
+          arguments: [
+            "-nic",
+            "none",
+            "-M",
+            "raspi3ap",
+            "-nographic",
+            "-m",
+            "512M",
+            "-accel",
+            "tcg,tb-size=500",
+            "-smp",
+            "4",
+            "-dtb",
+            "/pack/bcm2710-rpi-3-b-plus.dtb",
+            "-kernel",
+            "/pack/kernel8.img",
+            "-drive",
+            "file=/pack/rootfs.bin,format=raw,if=sd",
+            "-append",
+            "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
+          ],
+          mainScriptUrlOrBlob: base + "out.js",
+          pty,
           print: (line: string) => appendSerial(line + "\n"),
           printErr: (line: string) => appendSerial(line + "\n"),
           locateFile: (p: string) => base + p,
           onRuntimeInitialized: () => setStatus("running"),
         };
-        await loadScript(base + "out.js");
+        w.Module = moduleConfig;
+        await loadScript(base + "load.js");
+        appendSerial(
+          `[harness] loading ARM64 QEMU-Wasm core from ${base}out.js …\n`,
+        );
+        const qemuModule = (await import(/* @vite-ignore */ `${base}out.js`)) as {
+          default?: (moduleArg: EmscriptenModuleConfig) => Promise<EmscriptenModuleConfig>;
+        };
+        if (typeof qemuModule.default !== "function") {
+          throw new Error("QEMU-Wasm core did not export an Emscripten initializer.");
+        }
+        const instance = await qemuModule.default(moduleConfig);
+        const oldPoll = instance.TTY?.stream_ops?.poll;
+        if (typeof oldPoll === "function" && instance.TTY?.stream_ops) {
+          instance.TTY.stream_ops.poll = function patchedPoll(stream: unknown, timeout: unknown) {
+            if (!pty.readable) {
+              return (pty.readable ? 1 : 0) | (pty.writable ? 4 : 0);
+            }
+            return oldPoll.call(this, stream, timeout);
+          };
+        }
         setStatus("running");
         return;
       }
@@ -166,12 +331,21 @@ function EmulatorInner() {
   const stop = useCallback(() => {
     emuRef.current?.destroy?.();
     emuRef.current = null;
+    arm64PtyRef.current?.dispose();
+    arm64PtyRef.current = null;
     setStatus("idle");
   }, []);
 
-  useEffect(() => () => emuRef.current?.destroy?.(), []);
+  useEffect(
+    () => () => {
+      emuRef.current?.destroy?.();
+      arm64PtyRef.current?.dispose();
+    },
+    [],
+  );
 
   const sendSerial = useCallback((text: string) => {
+    arm64PtyRef.current?.pushInput(text);
     emuRef.current?.serial0_send?.(text);
   }, []);
 
