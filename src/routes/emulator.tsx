@@ -96,6 +96,7 @@ function EmulatorInner() {
         global: Window;
         setImmediate?: (fn: (...a: unknown[]) => void, ...a: unknown[]) => number;
         clearImmediate?: (id: number) => void;
+        Module?: Record<string, unknown>;
       };
       w.global = window;
       if (typeof w.setImmediate !== "function") {
@@ -103,6 +104,33 @@ function EmulatorInner() {
           window.setTimeout(fn, 0, ...a) as unknown as number;
         w.clearImmediate = (id) => window.clearTimeout(id);
       }
+
+      if (arch === "aarch64") {
+        // ARM64 core: QEMU-Wasm (TCG→WASM JIT). Requires a self-hosted,
+        // CORS-enabled artifact (emscripten glue + .wasm) built via the
+        // qemu-wasm toolchain — see the ARM64 panel for build steps.
+        const base = qemuBase.trim().replace(/\/?$/, "/");
+        if (!base) {
+          throw new Error(
+            "Set the QEMU-Wasm artifact base URL to boot the ARM64 core.",
+          );
+        }
+        appendSerial(
+          `[harness] loading ARM64 QEMU-Wasm core from ${base}out.js …\n`,
+        );
+        w.Module = {
+          canvas: screenRef.current?.querySelector("canvas") ?? undefined,
+          print: (line: string) => appendSerial(line + "\n"),
+          printErr: (line: string) => appendSerial(line + "\n"),
+          locateFile: (p: string) => base + p,
+          onRuntimeInitialized: () => setStatus("running"),
+        };
+        await loadScript(base + "out.js");
+        setStatus("running");
+        return;
+      }
+
+      // x86_64 core: v86.
       await loadScript(V86_SCRIPT);
       const V86 = window.V86;
       if (!V86) throw new Error("v86 failed to initialize");
@@ -133,7 +161,7 @@ function EmulatorInner() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [imageUrl, imageKind, appendSerial]);
+  }, [arch, qemuBase, imageUrl, imageKind, appendSerial]);
 
   const stop = useCallback(() => {
     emuRef.current?.destroy?.();
