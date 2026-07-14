@@ -109,7 +109,12 @@ function EmulatorInner() {
         // ARM64 core: QEMU-Wasm (TCG→WASM JIT). Requires a self-hosted,
         // CORS-enabled artifact (emscripten glue + .wasm) built via the
         // qemu-wasm toolchain — see the ARM64 panel for build steps.
-        const base = qemuBase.trim().replace(/\/?$/, "/");
+        // Accept either a base URL (".../") or a full ".../out.js" URL —
+        // strip a trailing out.js and normalize to a single trailing slash.
+        const base = qemuBase
+          .trim()
+          .replace(/out\.js\/?$/i, "")
+          .replace(/\/?$/, "/");
         if (!base) {
           throw new Error(
             "Set the QEMU-Wasm artifact base URL to boot the ARM64 core.",
