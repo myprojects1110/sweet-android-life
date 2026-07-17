@@ -580,27 +580,15 @@ function EmulatorInner() {
                 {armProfile === "virt" && (
                   <div className="grid gap-2 rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-3">
                     <p className="text-xs text-amber-500">
-                      Cuttlefish (aosp_cf_arm64_phone) image URLs — must be
-                      CORS-enabled. GitHub Pages can&apos;t host system.img
-                      (2–4&nbsp;GB); use R2 / S3 / a CDN.
+                      Cuttlefish manifest URL. Images are streamed once from
+                      Hugging Face into OPFS, sha256-verified, then mounted
+                      into the guest FS on every boot.
                     </p>
                     <input
-                      value={androidKernelUrl}
-                      onChange={(e) => setAndroidKernelUrl(e.target.value)}
+                      value={androidManifestUrl}
+                      onChange={(e) => setAndroidManifestUrl(e.target.value)}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="kernel URL (aarch64 Android kernel)"
-                    />
-                    <input
-                      value={androidInitrdUrl}
-                      onChange={(e) => setAndroidInitrdUrl(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="initramfs.img URL"
-                    />
-                    <input
-                      value={androidSystemUrl}
-                      onChange={(e) => setAndroidSystemUrl(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="system.img URL (large — will need OPFS streaming)"
+                      placeholder="https://…/manifest.json"
                     />
                   </div>
                 )}
