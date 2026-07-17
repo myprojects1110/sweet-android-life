@@ -336,6 +336,7 @@ function EmulatorInner() {
             `[harness] fetching manifest ${androidManifestUrl} …\n`,
           );
           const manifest = await fetchManifest(androidManifestUrl);
+          androidBuildId = manifest.build_id;
           appendSerial(
             `[harness] manifest build_id=${manifest.build_id} target=${manifest.target ?? "?"} files=${manifest.files.length}\n`,
           );
