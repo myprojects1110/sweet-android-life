@@ -491,17 +491,60 @@ function EmulatorInner() {
                 </div>
               </>
             ) : (
-              <div className="flex-1 min-w-[260px]">
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  QEMU-Wasm artifact base URL (CORS-enabled; contains out.js +
-                  .wasm)
-                </label>
-                <input
-                  value={qemuBase}
-                  onChange={(e) => setQemuBase(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                  placeholder="https://your-host/qemu-aarch64/"
-                />
+              <div className="flex w-full flex-col gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {(["raspi3ap", "virt"] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setArmProfile(p)}
+                      className={`rounded-md border px-3 py-1.5 text-xs font-mono transition-colors ${
+                        armProfile === p
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input bg-background hover:bg-accent"
+                      }`}
+                    >
+                      {p === "raspi3ap" ? "raspi3ap · Alpine ✓" : "virt · Android 17 ⚙"}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    QEMU-Wasm artifact base URL (CORS-enabled; out.js + .wasm)
+                  </label>
+                  <input
+                    value={qemuBase}
+                    onChange={(e) => setQemuBase(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    placeholder="https://your-host/qemu-aarch64/"
+                  />
+                </div>
+                {armProfile === "virt" && (
+                  <div className="grid gap-2 rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-3">
+                    <p className="text-xs text-amber-500">
+                      Cuttlefish (aosp_cf_arm64_phone) image URLs — must be
+                      CORS-enabled. GitHub Pages can&apos;t host system.img
+                      (2–4&nbsp;GB); use R2 / S3 / a CDN.
+                    </p>
+                    <input
+                      value={androidKernelUrl}
+                      onChange={(e) => setAndroidKernelUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="kernel URL (aarch64 Android kernel)"
+                    />
+                    <input
+                      value={androidInitrdUrl}
+                      onChange={(e) => setAndroidInitrdUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="initramfs.img URL"
+                    />
+                    <input
+                      value={androidSystemUrl}
+                      onChange={(e) => setAndroidSystemUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="system.img URL (large — will need OPFS streaming)"
+                    />
+                  </div>
+                )}
               </div>
             )}
             <div className="flex gap-2">
