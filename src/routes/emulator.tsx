@@ -271,28 +271,65 @@ function EmulatorInner() {
         appendSerial(
           `[harness] loading ARM64 QEMU-Wasm package from ${base}load.js …\n`,
         );
+        const qemuArgs =
+          armProfile === "virt"
+            ? [
+                // Stage 3: modern virt board for AOSP Cuttlefish (Android 17).
+                // Kernel / initrd / system.img must be hosted (CORS-enabled)
+                // and downloaded into the guest FS by load.js — for large
+                // system.img we'll swap this for an OPFS-backed block backend.
+                "-machine", "virt,gic-version=3",
+                "-cpu", "cortex-a53",
+                "-smp", "2",
+                "-m", "2048",
+                "-kernel", "/pack/android-kernel",
+                "-initrd", "/pack/android-initrd.img",
+                "-drive", "file=/pack/android-system.img,format=raw,if=none,id=sys",
+                "-device", "virtio-blk-pci,drive=sys",
+                "-device", "virtio-gpu-pci",
+                "-device", "virtio-tablet-pci",
+                "-device", "virtio-keyboard-pci",
+                "-netdev", "user,id=n0",
+                "-device", "virtio-net-pci,netdev=n0",
+                "-append",
+                "console=ttyAMA0 androidboot.hardware=cutf_cvm androidboot.selinux=permissive rw",
+                "-nographic",
+                "-accel", "tcg,tb-size=500",
+              ]
+            : [
+                // Stage 2 (working): raspi3ap + Alpine rootfs baked into .data
+                "-nic", "none",
+                "-M", "raspi3ap",
+                "-nographic",
+                "-m", "512M",
+                "-accel", "tcg,tb-size=500",
+                "-smp", "4",
+                "-dtb", "/pack/bcm2710-rpi-3-b-plus.dtb",
+                "-kernel", "/pack/kernel8.img",
+                "-drive", "file=/pack/rootfs.bin,format=raw,if=sd",
+                "-append",
+                "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
+              ];
+        if (armProfile === "virt") {
+          const missing = [
+            ["kernel", androidKernelUrl],
+            ["initrd", androidInitrdUrl],
+            ["system.img", androidSystemUrl],
+          ].filter(([, v]) => !v.trim());
+          if (missing.length) {
+            throw new Error(
+              `virt profile needs Android image URLs: ${missing.map((m) => m[0]).join(", ")}`,
+            );
+          }
+          appendSerial(
+            `[harness] virt/Android profile — NOTE: images not yet streamed into guest FS.\n` +
+              `[harness] The QEMU-Wasm .data package ships only raspi3ap files today.\n` +
+              `[harness] Next step: fetch these URLs into OPFS and mount as a virtual disk.\n` +
+              `  kernel : ${androidKernelUrl}\n  initrd : ${androidInitrdUrl}\n  system : ${androidSystemUrl}\n`,
+          );
+        }
         const moduleConfig: EmscriptenModuleConfig = {
-          arguments: [
-            "-nic",
-            "none",
-            "-M",
-            "raspi3ap",
-            "-nographic",
-            "-m",
-            "512M",
-            "-accel",
-            "tcg,tb-size=500",
-            "-smp",
-            "4",
-            "-dtb",
-            "/pack/bcm2710-rpi-3-b-plus.dtb",
-            "-kernel",
-            "/pack/kernel8.img",
-            "-drive",
-            "file=/pack/rootfs.bin,format=raw,if=sd",
-            "-append",
-            "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
-          ],
+          arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
           pty,
           print: (line: string) => appendSerial(line + "\n"),
