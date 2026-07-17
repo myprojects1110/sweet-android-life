@@ -13,10 +13,36 @@
 # in CI or on a Linux box, NOT in the Lovable sandbox.
 set -euo pipefail
 
+# ---- Logging helpers -------------------------------------------------------
+# Every phase is wrapped in a GitHub Actions log group + timing block so a
+# failing CI run shows exactly which phase died and how long each took,
+# instead of a wall of undifferentiated output.
+log()  { printf '\n\033[1;36m[build %s]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() { printf '\n\033[1;33m[build %s WARN]\033[0m %s\n' "$(date +%H:%M:%S)" "$*"; }
+phase() {
+  local name="$1"; shift
+  echo "::group::${name}"
+  local t0=$SECONDS
+  log "▶ ${name}"
+  "$@"
+  local dt=$((SECONDS - t0))
+  log "✓ ${name} (${dt}s)"
+  echo "::endgroup::"
+}
+trap 'rc=$?; warn "build.sh FAILED at line ${LINENO} (exit ${rc})"; exit $rc' ERR
+
+log "host: $(uname -a)"
+log "cwd:  $(pwd)"
+log "disk: $(df -h . | tail -1)"
+log "cpus: $(nproc)"
+log "mem:  $(free -h 2>/dev/null | awk '/Mem:/ {print $2 " total, " $7 " available"}' || echo 'n/a')"
+log "docker: $(docker --version 2>&1 || echo 'MISSING')"
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DEST="${HERE}/out"
 QEMU_WASM_REPO="${QEMU_WASM_REPO:-${HERE}/qemu-wasm}"
 BUILD_CONTAINER_NAME=build-qemu-wasm-arm64
+
 
 rm -rf "${DEST}"
 mkdir -p "${DEST}"
