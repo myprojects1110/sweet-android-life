@@ -1,0 +1,164 @@
+name: Mirror Cuttlefish images to Hugging Face
+
+# Fetches the latest AOSP Cuttlefish x86_64 phone build from ci.android.com,
+# unpacks the img zip, and uploads kernel / initramfs / system-and-friends
+# to a public Hugging Face Dataset repo along with a manifest.json.
+#
+# The browser emulator (/emulator, "virt Android" profile) reads manifest.json
+# and streams each .img into OPFS-backed block storage.
+#
+# Required repo secrets:
+#   HF_TOKEN — Hugging Face write token (Settings → Access Tokens → "Write")
+#
+# Configure the target repo below (HF_REPO). Must already exist and be a
+# public "dataset" repo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "ci.android.com branch (e.g. aosp-main)"
+        default: "aosp-main"
+      target:
+        description: "Build target"
+        default: "aosp_cf_x86_64_phone-trunk_staging-userdebug"
+      build_id:
+        description: "Specific build id (blank = latest)"
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1"   # weekly Mon 06:00 UTC — pick up new Cuttlefish drops
+
+concurrency:
+  group: cuttlefish-images-to-hf
+  cancel-in-progress: false
+
+env:
+  HF_REPO: "REPLACE_ME/cuttlefish-aosp-x86_64"   # <-- set to your HF dataset repo id
+  HF_REPO_TYPE: "dataset"
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android || true
+          df -h
+
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+
+      - name: Install tools
+        run: |
+          python -m pip install --no-cache-dir "huggingface_hub[cli]>=0.24" requests
+          sudo apt-get update -qq && sudo apt-get install -y -qq unzip jq curl
+
+      - name: Resolve latest Cuttlefish build id
+        id: resolve
+        env:
+          BRANCH: ${{ inputs.branch || 'aosp-main' }}
+          TARGET: ${{ inputs.target || 'aosp_cf_x86_64_phone-trunk_staging-userdebug' }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          set -euxo pipefail
+          if [ -n "$BUILD_ID" ]; then
+            echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+          else
+            # ci.android.com public JSON: latest green build for branch+target
+            URL="https://ci.android.com/builds/branches/${BRANCH}/status.json"
+            curl -fsSL "$URL" -o /tmp/status.json
+            BID=$(jq -r --arg t "$TARGET" '.targets[] | select(.name==$t) | .last_known_good_build' /tmp/status.json)
+            test -n "$BID" && test "$BID" != "null"
+            echo "build_id=$BID" >> "$GITHUB_OUTPUT"
+          fi
+          echo "branch=$BRANCH"   >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET"   >> "$GITHUB_OUTPUT"
+
+      - name: Download Cuttlefish artifacts
+        env:
+          BID:    ${{ steps.resolve.outputs.build_id }}
+          TARGET: ${{ steps.resolve.outputs.target }}
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/cf && cd /tmp/cf
+          BASE="https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/raw"
+          # Cuttlefish x86_64 ships a single img zip + host package. We only need the img zip
+          # for in-browser boot (host tools like cvd/launch_cvd don't run in Wasm).
+          IMG_ZIP="aosp_cf_x86_64_phone-img-${BID}.zip"
+          curl -fL --retry 5 --retry-delay 5 -o "$IMG_ZIP" "${BASE}/${IMG_ZIP}"
+          ls -lh
+          unzip -o "$IMG_ZIP" -d unpacked
+          ls -lh unpacked
+
+      - name: Build manifest.json
+        id: manifest
+        env:
+          BID:    ${{ steps.resolve.outputs.build_id }}
+          BRANCH: ${{ steps.resolve.outputs.branch }}
+          TARGET: ${{ steps.resolve.outputs.target }}
+        run: |
+          set -euxo pipefail
+          cd /tmp/cf/unpacked
+          # Whitelist the images the browser guest actually needs.
+          KEEP="kernel initramfs.img boot.img super.img userdata.img vendor_boot.img vbmeta.img vbmeta_system.img misc.img"
+          python - <<'PY'
+          import hashlib, json, os, pathlib, time
+          keep = set("kernel initramfs.img boot.img super.img userdata.img vendor_boot.img vbmeta.img vbmeta_system.img misc.img".split())
+          out = {
+            "generated_at": int(time.time()),
+            "branch":   os.environ["BRANCH"],
+            "target":   os.environ["TARGET"],
+            "build_id": os.environ["BID"],
+            "files": [],
+          }
+          for p in sorted(pathlib.Path(".").iterdir()):
+            if not p.is_file() or p.name not in keep: continue
+            h = hashlib.sha256()
+            with p.open("rb") as f:
+              for chunk in iter(lambda: f.read(1<<20), b""): h.update(chunk)
+            out["files"].append({
+              "name":   p.name,
+              "size":   p.stat().st_size,
+              "sha256": h.hexdigest(),
+            })
+          pathlib.Path("manifest.json").write_text(json.dumps(out, indent=2))
+          print(json.dumps(out, indent=2))
+          PY
+          cat manifest.json
+
+      - name: Upload to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          set -euxo pipefail
+          if [ -z "${HF_TOKEN:-}" ]; then
+            echo "::error::HF_TOKEN secret is not set. Add it in repo Settings → Secrets → Actions."
+            exit 1
+          fi
+          if [[ "${HF_REPO}" == REPLACE_ME/* ]]; then
+            echo "::error::Edit env.HF_REPO in this workflow to point at your Hugging Face dataset repo."
+            exit 1
+          fi
+          cd /tmp/cf/unpacked
+          # Only upload the whitelisted files + manifest. Keep folder flat.
+          mkdir -p /tmp/upload
+          cp manifest.json /tmp/upload/
+          for f in kernel initramfs.img boot.img super.img userdata.img vendor_boot.img vbmeta.img vbmeta_system.img misc.img; do
+            [ -f "$f" ] && cp "$f" /tmp/upload/ || true
+          done
+          ls -lh /tmp/upload
+          huggingface-cli upload "${HF_REPO}" /tmp/upload . \
+            --repo-type "${HF_REPO_TYPE}" \
+            --commit-message "cuttlefish ${{ steps.resolve.outputs.build_id }} (${{ steps.resolve.outputs.target }})"
+
+      - name: Summary
+        run: |
+          echo "### Cuttlefish mirror complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- HF repo: \`${HF_REPO}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Build:  \`${{ steps.resolve.outputs.build_id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Target: \`${{ steps.resolve.outputs.target }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Manifest URL: https://huggingface.co/datasets/${HF_REPO}/resolve/main/manifest.json" >> $GITHUB_STEP_SUMMARY
