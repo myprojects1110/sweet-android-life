@@ -371,10 +371,26 @@ function EmulatorInner() {
           );
         }
 
+        type EmscriptenFS = {
+          mkdirTree: (path: string) => void;
+          writeFile: (path: string, data: Uint8Array) => void;
+        };
+        const preRun: Array<(mod: { FS: EmscriptenFS }) => void> = [];
+        if (cachedAndroidImages.length) {
+          preRun.push(async (mod) => {
+            mod.FS.mkdirTree("/pack");
+            for (const img of cachedAndroidImages) {
+              appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
+              const bytes = await readCached(img);
+              mod.FS.writeFile("/pack/" + img.file.name, bytes);
+            }
+          });
+        }
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
           pty,
+          preRun,
           print: (line: string) => appendSerial(line + "\n"),
           printErr: (line: string) => appendSerial(line + "\n"),
           locateFile: (p: string) =>
