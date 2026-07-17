@@ -376,18 +376,78 @@ function EmulatorInner() {
         type EmscriptenFS = {
           mkdirTree: (path: string) => void;
           writeFile: (path: string, data: Uint8Array) => void;
+          mount: (fs: unknown, opts: unknown, mountpoint: string) => void;
+          isDir: (mode: number) => boolean;
+          isFile: (mode: number) => boolean;
+          createNode: unknown;
+          ErrnoError: unknown;
         };
-        const preRun: Array<(mod: { FS: EmscriptenFS }) => void> = [];
+
+        // Pre-open the OPFS block bridge on the main thread; the client
+        // object (which only touches the SAB) is safely usable from the
+        // pthread that eventually calls into our custom FS.
+        let blockClient: Awaited<ReturnType<typeof getOpfsBlockClient>> | null = null;
+        const blockEntries: { name: string; opfsPath: string }[] = [];
+        if (cachedAndroidImages.length) {
+          try {
+            blockClient = await getOpfsBlockClient();
+            appendSerial(`[opfs-block] worker ready (SAB ${blockClient.sab.byteLength} bytes)\n`);
+          } catch (e) {
+            appendSerial(
+              `[opfs-block] failed to init: ${e instanceof Error ? e.message : String(e)}\n`,
+            );
+          }
+        }
+
+        const preRun: Array<(mod: { FS: EmscriptenFS }) => void | Promise<void>> = [];
         if (cachedAndroidImages.length) {
           preRun.push(async (mod) => {
             mod.FS.mkdirTree("/pack");
+            mod.FS.mkdirTree("/blk");
             const byName = new Map<string, typeof cachedAndroidImages[number]>();
             for (const img of cachedAndroidImages) byName.set(img.file.name, img);
+            const buildId = cachedAndroidImages[0]
+              ? // opfs path shape from opfs-images.ts: /cuttlefish/<build_id>/<name>
+                undefined
+              : undefined;
+            void buildId;
             for (const img of cachedAndroidImages) {
+              if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
+                // Path inside OPFS matches opfs-images.ts layout.
+                const opfsPath = `cuttlefish/${(await getBuildIdForCached()) ?? ""}/${img.file.name}`;
+                blockEntries.push({ name: img.file.name, opfsPath });
+                appendSerial(
+                  `[fs] mounting /blk/${img.file.name} via OPFS block FS (${img.file.size} bytes, zero MEMFS)\n`,
+                );
+                continue;
+              }
               appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
               const bytes = await readCached(img);
               mod.FS.writeFile("/pack/" + img.file.name, bytes);
             }
+
+            if (blockClient && blockEntries.length) {
+              installOpfsBlockFsRef({
+                createNode: mod.FS.createNode as never,
+                isDir: mod.FS.isDir,
+                isFile: mod.FS.isFile,
+                ErrnoError: mod.FS.ErrnoError as never,
+              });
+              try {
+                mod.FS.mount(makeOpfsBlockFS(blockClient), { entries: blockEntries }, "/blk");
+                appendSerial(
+                  `[opfs-block] mounted at /blk with ${blockEntries.length} file(s)\n`,
+                );
+              } catch (e) {
+                appendSerial(
+                  `[opfs-block] FS.mount failed: ${e instanceof Error ? e.message : String(e)}\n` +
+                    `[opfs-block] The QEMU-Wasm Emscripten build may proxy FS ops to the main thread,\n` +
+                    `[opfs-block] where Atomics.wait throws. A rebuilt QEMU with a custom block driver\n` +
+                    `[opfs-block] hitting SyncAccessHandle from the QEMU pthread is required to fix this.\n`,
+                );
+              }
+            }
+
             // Unpack boot.img → kernel + generic ramdisk, vendor_boot.img →
             // vendor ramdisk. Feed the concatenated cpio(.gz) blob to -initrd.
             const boot = byName.get("boot.img");
@@ -417,6 +477,18 @@ function EmulatorInner() {
               );
             }
           });
+        }
+
+        // Extract build_id from the manifest fetched above so opfs paths match
+        // exactly what opfs-images.ts wrote.
+        async function getBuildIdForCached(): Promise<string | undefined> {
+          if (!androidManifestUrl.trim()) return undefined;
+          try {
+            const m = await fetchManifest(androidManifestUrl);
+            return m.build_id;
+          } catch {
+            return undefined;
+          }
         }
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
