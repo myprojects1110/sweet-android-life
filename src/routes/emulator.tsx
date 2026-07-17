@@ -283,17 +283,21 @@ function EmulatorInner() {
           armProfile === "virt"
             ? [
                 // Stage 3: modern virt board for AOSP Cuttlefish (Android 17).
-                // Kernel / initrd / system.img must be hosted (CORS-enabled)
-                // and downloaded into the guest FS by load.js — for large
-                // system.img we'll swap this for an OPFS-backed block backend.
+                // Cuttlefish images are streamed into OPFS from the manifest
+                // and mounted into Emscripten MEMFS at /pack/<name> below.
+                // NOTE: the manifest gives boot.img / vendor_boot.img /
+                // super.img / vbmeta*.img / userdata.img — kernel + ramdisk
+                // still need to be extracted from boot.img before QEMU can
+                // consume them. Wiring is here; extraction is the next PR.
                 "-machine", "virt,gic-version=3",
                 "-cpu", "cortex-a53",
                 "-smp", "2",
                 "-m", "2048",
-                "-kernel", "/pack/android-kernel",
-                "-initrd", "/pack/android-initrd.img",
-                "-drive", "file=/pack/android-system.img,format=raw,if=none,id=sys",
-                "-device", "virtio-blk-pci,drive=sys",
+                "-kernel", "/pack/boot.img",
+                "-drive", "file=/pack/super.img,format=raw,if=none,id=super",
+                "-device", "virtio-blk-pci,drive=super",
+                "-drive", "file=/pack/userdata.img,format=raw,if=none,id=data",
+                "-device", "virtio-blk-pci,drive=data",
                 "-device", "virtio-gpu-pci",
                 "-device", "virtio-tablet-pci",
                 "-device", "virtio-keyboard-pci",
@@ -318,24 +322,55 @@ function EmulatorInner() {
                 "-append",
                 "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
               ];
+        let cachedAndroidImages: Awaited<ReturnType<typeof ensureImages>> = [];
         if (armProfile === "virt") {
-          const missing = [
-            ["kernel", androidKernelUrl],
-            ["initrd", androidInitrdUrl],
-            ["system.img", androidSystemUrl],
-          ].filter(([, v]) => !v.trim());
-          if (missing.length) {
-            throw new Error(
-              `virt profile needs Android image URLs: ${missing.map((m) => m[0]).join(", ")}`,
-            );
+          if (!androidManifestUrl.trim()) {
+            throw new Error("virt profile needs an Android manifest URL.");
           }
           appendSerial(
-            `[harness] virt/Android profile — NOTE: images not yet streamed into guest FS.\n` +
-              `[harness] The QEMU-Wasm .data package ships only raspi3ap files today.\n` +
-              `[harness] Next step: fetch these URLs into OPFS and mount as a virtual disk.\n` +
-              `  kernel : ${androidKernelUrl}\n  initrd : ${androidInitrdUrl}\n  system : ${androidSystemUrl}\n`,
+            `[harness] fetching manifest ${androidManifestUrl} …\n`,
+          );
+          const manifest = await fetchManifest(androidManifestUrl);
+          appendSerial(
+            `[harness] manifest build_id=${manifest.build_id} target=${manifest.target ?? "?"} files=${manifest.files.length}\n`,
+          );
+          const baseImages = androidManifestUrl.replace(/manifest\.json(?:\?.*)?$/, "");
+          let lastLog = 0;
+          const onProgress = (p: Progress) => {
+            if (p.phase === "cached") {
+              appendSerial(`[opfs] ✓ cached ${p.file} (${p.total} bytes)\n`);
+              return;
+            }
+            if (p.phase === "ready") {
+              appendSerial(`[opfs] ✓ downloaded ${p.file}\n`);
+              return;
+            }
+            if (p.phase === "verify") {
+              appendSerial(`[opfs] verifying sha256 for ${p.file} …\n`);
+              return;
+            }
+            if (p.phase === "check") {
+              appendSerial(`[opfs] checking ${p.file} …\n`);
+              lastLog = 0;
+              return;
+            }
+            const now = performance.now();
+            if (now - lastLog > 500) {
+              lastLog = now;
+              const pct = p.total ? ((p.received / p.total) * 100).toFixed(1) : "?";
+              appendSerial(
+                `[opfs]   ${p.file}: ${(p.received / (1024 * 1024)).toFixed(1)} / ${(p.total / (1024 * 1024)).toFixed(1)} MiB (${pct}%)\n`,
+              );
+            }
+          };
+          cachedAndroidImages = await ensureImages(manifest, baseImages, onProgress);
+          appendSerial(
+            `[harness] all ${cachedAndroidImages.length} images ready in OPFS.\n` +
+              `[harness] NOTE: QEMU expects a raw kernel + initramfs; boot.img/vendor_boot.img still\n` +
+              `[harness]       need Android-boot-image unpacking before -kernel/-initrd point at real bytes.\n`,
           );
         }
+
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
