@@ -17,11 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "ci.android.com branch (e.g. aosp-main)"
-        default: "aosp-main"
+        description: "ci.android.com branch"
+        default: "aosp-android-latest-release"
       target:
         description: "Build target"
-        default: "aosp_cf_x86_64_phone-trunk_staging-userdebug"
+        default: "aosp_cf_x86_64_only_phone-userdebug"
       build_id:
         description: "Specific build id (blank = latest)"
         default: ""
