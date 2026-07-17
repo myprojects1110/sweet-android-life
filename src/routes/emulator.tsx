@@ -401,9 +401,50 @@ function EmulatorInner() {
           }
         }
 
-        const preRun: Array<(mod: { FS: EmscriptenFS }) => void | Promise<void>> = [];
+        const resolveFS = (mod: unknown): EmscriptenFS => {
+          const m = (mod ?? {}) as Record<string, unknown>;
+          const g = globalThis as Record<string, unknown>;
+          const fs =
+            (m.FS as EmscriptenFS | undefined) ??
+            (g.FS as EmscriptenFS | undefined) ??
+            ((): EmscriptenFS | undefined => {
+              // Fallback: some Emscripten builds only expose FS_* helpers on Module.
+              const mk = m.FS_mkdirTree as ((p: string) => void) | undefined;
+              const wf = m.FS_createDataFile as
+                | ((parent: string, name: string, data: Uint8Array, canRead: boolean, canWrite: boolean, canOwn: boolean) => void)
+                | undefined;
+              if (!mk || !wf) return undefined;
+              return {
+                mkdirTree: mk,
+                writeFile: (path: string, data: Uint8Array) => {
+                  const i = path.lastIndexOf("/");
+                  const parent = path.slice(0, i) || "/";
+                  const name = path.slice(i + 1);
+                  mk(parent);
+                  wf(parent, name, data, true, true, true);
+                },
+                mount: () => {
+                  throw new Error("FS.mount unavailable (FS not exported)");
+                },
+                isDir: () => false,
+                isFile: () => false,
+                createNode: undefined,
+                ErrnoError: undefined,
+              } as EmscriptenFS;
+            })();
+          if (!fs) {
+            const keys = Object.keys(m).filter((k) => k.startsWith("FS")).slice(0, 20);
+            throw new Error(
+              `Emscripten FS not exposed on Module. FS-ish keys: ${keys.join(", ") || "(none)"}`,
+            );
+          }
+          return fs;
+        };
+
+        const preRun: Array<(mod: unknown) => void | Promise<void>> = [];
         if (cachedAndroidImages.length) {
-          preRun.push(async (mod) => {
+          preRun.push(async (rawMod) => {
+            const mod = { FS: resolveFS(rawMod) } as { FS: EmscriptenFS };
             mod.FS.mkdirTree("/pack");
             mod.FS.mkdirTree("/blk");
             const byName = new Map<string, typeof cachedAndroidImages[number]>();
