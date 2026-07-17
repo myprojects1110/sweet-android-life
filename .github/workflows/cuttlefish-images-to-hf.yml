@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  HF_REPO: "REPLACE_ME/cuttlefish-aosp-x86_64"   # <-- set to your HF dataset repo id
+  HF_REPO: "ervjn455/android-17-wasm-images"
   HF_REPO_TYPE: "dataset"
 
 jobs:
