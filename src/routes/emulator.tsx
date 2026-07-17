@@ -416,7 +416,7 @@ function EmulatorInner() {
             for (const img of cachedAndroidImages) {
               if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
                 // Path inside OPFS matches opfs-images.ts layout.
-                const opfsPath = `cuttlefish/${(await getBuildIdForCached()) ?? ""}/${img.file.name}`;
+                const opfsPath = `cuttlefish/${androidBuildId}/${img.file.name}`;
                 blockEntries.push({ name: img.file.name, opfsPath });
                 appendSerial(
                   `[fs] mounting /blk/${img.file.name} via OPFS block FS (${img.file.size} bytes, zero MEMFS)\n`,
