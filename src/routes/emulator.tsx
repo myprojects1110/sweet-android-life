@@ -481,17 +481,6 @@ function EmulatorInner() {
           });
         }
 
-        // Extract build_id from the manifest fetched above so opfs paths match
-        // exactly what opfs-images.ts wrote.
-        async function getBuildIdForCached(): Promise<string | undefined> {
-          if (!androidManifestUrl.trim()) return undefined;
-          try {
-            const m = await fetchManifest(androidManifestUrl);
-            return m.build_id;
-          } catch {
-            return undefined;
-          }
-        }
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
