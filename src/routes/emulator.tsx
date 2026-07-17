@@ -10,6 +10,12 @@ import {
   readCached,
   type Progress,
 } from "../lib/opfs-images";
+import { getOpfsBlockClient } from "../lib/opfs-block-bridge";
+import { makeOpfsBlockFS, installOpfsBlockFsRef } from "../lib/opfs-block-fs";
+
+// Cuttlefish files that must NEVER be loaded into MEMFS — mount via OPFS
+// block FS instead. Anything larger than a few MiB belongs here.
+const BLOCK_MOUNTED = new Set(["super.img", "userdata.img"]);
 
 export const Route = createFileRoute("/emulator")({
   head: () => ({
