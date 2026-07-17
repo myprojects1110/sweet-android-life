@@ -100,7 +100,7 @@ phase "5a/8 emconfigure qemu-system-aarch64" \
     --static --target-list=aarch64-softmmu --cpu=wasm32 --cross-prefix= \
     --without-default-features --enable-system --with-coroutine=fiber \
     --extra-cflags="$EXTRA_CFLAGS" --extra-cxxflags="$EXTRA_CFLAGS" \
-    --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY"
+    --extra-ldflags="-sEXPORTED_RUNTIME_METHODS=getTempRet0,setTempRet0,addFunction,removeFunction,TTY,FS,FS_createPath,FS_createDataFile,FS_createPreloadedFile,FS_unlink,FS_mkdirTree,FS_readFile,FS_writeFile,addRunDependency,removeRunDependency,callMain,ccall,cwrap,ENV,PROXYFS,WORKERFS,IDBFS"
 
 phase "5b/8 emmake qemu-system-aarch64 (long, ~20 min)" \
   docker exec "${BUILD_CONTAINER_NAME}" emmake make -j "$(nproc)" qemu-system-aarch64
