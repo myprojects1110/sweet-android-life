@@ -39,6 +39,8 @@ const BIOS = seabios.url;
 const VGA_BIOS = vgabios.url;
 // Small bootable Linux ISO, served same-origin from Lovable's CDN (no CORS issues).
 const DEFAULT_IMAGE = linuxImage.url;
+const DEFAULT_ANDROID_MANIFEST =
+  "https://huggingface.co/datasets/ervjn455/android-17-wasm-images/resolve/main/manifest.json";
 
 declare global {
   interface Window {
