@@ -17,11 +17,11 @@ on:
   workflow_dispatch:
     inputs:
       branch:
-        description: "ci.android.com branch (e.g. aosp-main)"
-        default: "aosp-main"
+        description: "ci.android.com branch"
+        default: "aosp-android-latest-release"
       target:
         description: "Build target"
-        default: "aosp_cf_x86_64_phone-trunk_staging-userdebug"
+        default: "aosp_cf_x86_64_only_phone-userdebug"
       build_id:
         description: "Specific build id (blank = latest)"
         default: ""
@@ -59,37 +59,46 @@ jobs:
       - name: Resolve latest Cuttlefish build id
         id: resolve
         env:
-          BRANCH: ${{ inputs.branch || 'aosp-main' }}
-          TARGET: ${{ inputs.target || 'aosp_cf_x86_64_phone-trunk_staging-userdebug' }}
+          BRANCH: ${{ inputs.branch || 'aosp-android-latest-release' }}
+          TARGET: ${{ inputs.target || 'aosp_cf_x86_64_only_phone-userdebug' }}
           BUILD_ID: ${{ inputs.build_id }}
         run: |
           set -euxo pipefail
           if [ -n "$BUILD_ID" ]; then
-            echo "build_id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+            BID="$BUILD_ID"
           else
-            # ci.android.com public JSON: latest green build for branch+target
             URL="https://ci.android.com/builds/branches/${BRANCH}/status.json"
             curl -fsSL "$URL" -o /tmp/status.json
             BID=$(jq -r --arg t "$TARGET" '.targets[] | select(.name==$t) | .last_known_good_build' /tmp/status.json)
-            test -n "$BID" && test "$BID" != "null"
-            echo "build_id=$BID" >> "$GITHUB_OUTPUT"
+            if [ -z "$BID" ] || [ "$BID" = "null" ]; then
+              echo "::error::No last_known_good_build for ${TARGET} on ${BRANCH}"
+              jq -r '.targets[].name' /tmp/status.json | head -20
+              exit 1
+            fi
           fi
+          echo "build_id=$BID"    >> "$GITHUB_OUTPUT"
           echo "branch=$BRANCH"   >> "$GITHUB_OUTPUT"
           echo "target=$TARGET"   >> "$GITHUB_OUTPUT"
 
-      - name: Download Cuttlefish artifacts
+      - name: Download Cuttlefish img zip
         env:
           BID:    ${{ steps.resolve.outputs.build_id }}
           TARGET: ${{ steps.resolve.outputs.target }}
         run: |
           set -euxo pipefail
           mkdir -p /tmp/cf && cd /tmp/cf
-          BASE="https://ci.android.com/builds/submitted/${BID}/${TARGET}/latest/raw"
-          # Cuttlefish x86_64 ships a single img zip + host package. We only need the img zip
-          # for in-browser boot (host tools like cvd/launch_cvd don't run in Wasm).
-          IMG_ZIP="aosp_cf_x86_64_phone-img-${BID}.zip"
-          curl -fL --retry 5 --retry-delay 5 -o "$IMG_ZIP" "${BASE}/${IMG_ZIP}"
-          ls -lh
+          IMG_ZIP="${TARGET%-userdebug}-img-${BID}.zip"
+          # target name in artifact filename drops the "-userdebug" suffix
+          # (e.g. aosp_cf_x86_64_only_phone-img-15660610.zip)
+          VIEW_HTML="/tmp/cf/view.html"
+          curl -fsSL "https://ci.android.com/builds/submitted/${BID}/${TARGET}/1/view/${IMG_ZIP}" -o "$VIEW_HTML"
+          # The artifact-viewer page embeds a signed storage.googleapis.com URL
+          SIGNED_URL=$(grep -oE 'https://storage\.googleapis\.com/android-build/[^"\\]+' "$VIEW_HTML" \
+                       | sed 's/\\u0026/\&/g' | head -1)
+          test -n "$SIGNED_URL"
+          echo "Signed URL host: $(echo "$SIGNED_URL" | cut -d/ -f1-3)"
+          curl -fL --retry 5 --retry-delay 5 -o "$IMG_ZIP" "$SIGNED_URL"
+          ls -lh "$IMG_ZIP"
           unzip -o "$IMG_ZIP" -d unpacked
           ls -lh unpacked
 
