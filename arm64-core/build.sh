@@ -88,23 +88,32 @@ docker run --rm -v "${TMPDIR}/pack":/pack alpine:latest /bin/sh -euxc "
   mkdir -p /rootfs
   curl -fsSL '${ALPINE_ROOTFS_URL}' | tar -xz -C /rootfs
 
-  # Serial console: raspi3ap exposes ttyAMA0. Spawn a getty there so the
-  # user gets a login prompt after boot, and skip tty1..tty6 (no VT).
+  # Minimal init: mount pseudo-filesystems, then spawn a passwordless root
+  # shell on ttyAMA0. The Alpine minirootfs doesn't ship OpenRC, and busybox
+  # login rejects ttyAMA0 unless it's in /etc/securetty, so we skip login
+  # entirely with 'getty -n -l /bin/sh' — this is a browser-sandboxed dev
+  # image, not a multi-user system.
   cat > /rootfs/etc/inittab <<'EOF'
-::sysinit:/sbin/openrc sysinit
-::sysinit:/sbin/openrc boot
-::wait:/sbin/openrc default
-ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
+::sysinit:/bin/mount -t proc proc /proc
+::sysinit:/bin/mount -t sysfs sysfs /sys
+::sysinit:/bin/mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/mount -t tmpfs tmpfs /tmp
+::sysinit:/bin/mount -t tmpfs tmpfs /run
+::sysinit:/bin/hostname -F /etc/hostname
+ttyAMA0::respawn:/sbin/getty -n -l /bin/sh -L ttyAMA0 115200 vt100
 ::ctrlaltdel:/sbin/reboot
-::shutdown:/sbin/openrc shutdown
+::shutdown:/bin/umount -a -r
 EOF
 
+  # Ensure ttyAMA0 is an allowed login tty (in case we re-enable login later).
+  echo ttyAMA0 >> /rootfs/etc/securetty
   # Root has no password (dev image; the guest is sandboxed in a browser tab).
   sed -i 's|^root:[^:]*:|root::|' /rootfs/etc/shadow
 
   # Reasonable defaults so networking / dns work if we wire -nic later.
   echo 'nameserver 1.1.1.1' > /rootfs/etc/resolv.conf
   echo 'alpine-arm64' > /rootfs/etc/hostname
+
 
   # Build a sparse ext4 image populated from /rootfs. -F to skip the
   # 'not a block device' prompt, -E no_copy_xattrs to avoid host xattr noise.
