@@ -327,6 +327,7 @@ function EmulatorInner() {
                 "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
               ];
         let cachedAndroidImages: Awaited<ReturnType<typeof ensureImages>> = [];
+        let androidBuildId = "";
         if (armProfile === "virt") {
           if (!androidManifestUrl.trim()) {
             throw new Error("virt profile needs an Android manifest URL.");
