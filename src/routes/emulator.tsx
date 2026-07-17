@@ -443,77 +443,93 @@ function EmulatorInner() {
 
         const preRun: Array<(mod: unknown) => void | Promise<void>> = [];
         if (cachedAndroidImages.length) {
-          preRun.push(async (rawMod) => {
-            const mod = { FS: resolveFS(rawMod) } as { FS: EmscriptenFS };
-            mod.FS.mkdirTree("/pack");
-            mod.FS.mkdirTree("/blk");
-            const byName = new Map<string, typeof cachedAndroidImages[number]>();
-            for (const img of cachedAndroidImages) byName.set(img.file.name, img);
-            for (const img of cachedAndroidImages) {
-              if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
-                // Path inside OPFS matches opfs-images.ts layout.
-                const opfsPath = `cuttlefish/${androidBuildId}/${img.file.name}`;
-                blockEntries.push({ name: img.file.name, opfsPath });
-                appendSerial(
-                  `[fs] mounting /blk/${img.file.name} via OPFS block FS (${img.file.size} bytes, zero MEMFS)\n`,
-                );
-                continue;
+          preRun.push((rawMod) => {
+            const m = (rawMod ?? {}) as Record<string, unknown> & {
+              addRunDependency?: (id: string) => void;
+              removeRunDependency?: (id: string) => void;
+            };
+            const depId = "opfs-android-images";
+            const addDep = typeof m.addRunDependency === "function" ? m.addRunDependency.bind(m) : null;
+            const rmDep = typeof m.removeRunDependency === "function" ? m.removeRunDependency.bind(m) : null;
+            if (addDep) addDep(depId);
+            (async () => {
+              const mod = { FS: resolveFS(rawMod) } as { FS: EmscriptenFS };
+              mod.FS.mkdirTree("/pack");
+              mod.FS.mkdirTree("/blk");
+              const byName = new Map<string, typeof cachedAndroidImages[number]>();
+              for (const img of cachedAndroidImages) byName.set(img.file.name, img);
+              for (const img of cachedAndroidImages) {
+                if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
+                  const opfsPath = `cuttlefish/${androidBuildId}/${img.file.name}`;
+                  blockEntries.push({ name: img.file.name, opfsPath });
+                  appendSerial(
+                    `[fs] mounting /blk/${img.file.name} via OPFS block FS (${img.file.size} bytes, zero MEMFS)\n`,
+                  );
+                  continue;
+                }
+                appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
+                const bytes = await readCached(img);
+                mod.FS.writeFile("/pack/" + img.file.name, bytes);
               }
-              appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
-              const bytes = await readCached(img);
-              mod.FS.writeFile("/pack/" + img.file.name, bytes);
-            }
 
-            if (blockClient && blockEntries.length) {
-              installOpfsBlockFsRef({
-                createNode: mod.FS.createNode as never,
-                isDir: mod.FS.isDir,
-                isFile: mod.FS.isFile,
-                ErrnoError: mod.FS.ErrnoError as never,
+              if (blockClient && blockEntries.length) {
+                installOpfsBlockFsRef({
+                  createNode: mod.FS.createNode as never,
+                  isDir: mod.FS.isDir,
+                  isFile: mod.FS.isFile,
+                  ErrnoError: mod.FS.ErrnoError as never,
+                });
+                try {
+                  mod.FS.mount(makeOpfsBlockFS(blockClient), { entries: blockEntries }, "/blk");
+                  appendSerial(
+                    `[opfs-block] mounted at /blk with ${blockEntries.length} file(s)\n`,
+                  );
+                } catch (e) {
+                  appendSerial(
+                    `[opfs-block] FS.mount failed: ${e instanceof Error ? e.message : String(e)}\n` +
+                      `[opfs-block] The QEMU-Wasm Emscripten build may proxy FS ops to the main thread,\n` +
+                      `[opfs-block] where Atomics.wait throws. A rebuilt QEMU with a custom block driver\n` +
+                      `[opfs-block] hitting SyncAccessHandle from the QEMU pthread is required to fix this.\n`,
+                  );
+                }
+              }
+
+              const boot = byName.get("boot.img");
+              const vboot = byName.get("vendor_boot.img");
+              if (boot) {
+                const { parseBootImage, parseVendorBootImage, combineRamdisks } =
+                  await import("../lib/android-boot");
+                const bootParts = parseBootImage(await readCached(boot));
+                appendSerial(
+                  `[boot] boot.img v${bootParts.headerVersion}: kernel=${bootParts.kernel.length} ramdisk=${bootParts.ramdisk.length}\n`,
+                );
+                mod.FS.writeFile("/pack/_kernel", bootParts.kernel);
+                let ramdisk = bootParts.ramdisk;
+                if (vboot) {
+                  const vp = parseVendorBootImage(await readCached(vboot));
+                  appendSerial(
+                    `[boot] vendor_boot.img v${vp.headerVersion}: vendor_ramdisk=${vp.vendorRamdisk.length} dtb=${vp.dtb.length} bootconfig=${vp.bootconfig.length}\n`,
+                  );
+                  ramdisk = combineRamdisks(vp.vendorRamdisk, ramdisk);
+                  if (vp.dtb.length) mod.FS.writeFile("/pack/_dtb", vp.dtb);
+                  if (vp.bootconfig.length)
+                    mod.FS.writeFile("/pack/_bootconfig", vp.bootconfig);
+                }
+                mod.FS.writeFile("/pack/_ramdisk", ramdisk);
+                appendSerial(
+                  `[boot] wrote /pack/_kernel (${bootParts.kernel.length}) and /pack/_ramdisk (${ramdisk.length})\n`,
+                );
+              }
+            })()
+              .catch((e) => {
+                appendSerial(
+                  `[preRun] fatal: ${e instanceof Error ? e.message : String(e)}\n`,
+                );
+              })
+              .finally(() => {
+                if (rmDep) rmDep(depId);
+                else appendSerial(`[preRun] warning: no removeRunDependency on Module; QEMU may start before FS is ready\n`);
               });
-              try {
-                mod.FS.mount(makeOpfsBlockFS(blockClient), { entries: blockEntries }, "/blk");
-                appendSerial(
-                  `[opfs-block] mounted at /blk with ${blockEntries.length} file(s)\n`,
-                );
-              } catch (e) {
-                appendSerial(
-                  `[opfs-block] FS.mount failed: ${e instanceof Error ? e.message : String(e)}\n` +
-                    `[opfs-block] The QEMU-Wasm Emscripten build may proxy FS ops to the main thread,\n` +
-                    `[opfs-block] where Atomics.wait throws. A rebuilt QEMU with a custom block driver\n` +
-                    `[opfs-block] hitting SyncAccessHandle from the QEMU pthread is required to fix this.\n`,
-                );
-              }
-            }
-
-            // Unpack boot.img → kernel + generic ramdisk, vendor_boot.img →
-            // vendor ramdisk. Feed the concatenated cpio(.gz) blob to -initrd.
-            const boot = byName.get("boot.img");
-            const vboot = byName.get("vendor_boot.img");
-            if (boot) {
-              const { parseBootImage, parseVendorBootImage, combineRamdisks } =
-                await import("../lib/android-boot");
-              const bootParts = parseBootImage(await readCached(boot));
-              appendSerial(
-                `[boot] boot.img v${bootParts.headerVersion}: kernel=${bootParts.kernel.length} ramdisk=${bootParts.ramdisk.length}\n`,
-              );
-              mod.FS.writeFile("/pack/_kernel", bootParts.kernel);
-              let ramdisk = bootParts.ramdisk;
-              if (vboot) {
-                const vp = parseVendorBootImage(await readCached(vboot));
-                appendSerial(
-                  `[boot] vendor_boot.img v${vp.headerVersion}: vendor_ramdisk=${vp.vendorRamdisk.length} dtb=${vp.dtb.length} bootconfig=${vp.bootconfig.length}\n`,
-                );
-                ramdisk = combineRamdisks(vp.vendorRamdisk, ramdisk);
-                if (vp.dtb.length) mod.FS.writeFile("/pack/_dtb", vp.dtb);
-                if (vp.bootconfig.length)
-                  mod.FS.writeFile("/pack/_bootconfig", vp.bootconfig);
-              }
-              mod.FS.writeFile("/pack/_ramdisk", ramdisk);
-              appendSerial(
-                `[boot] wrote /pack/_kernel (${bootParts.kernel.length}) and /pack/_ramdisk (${ramdisk.length})\n`,
-              );
-            }
           });
         }
 
