@@ -93,8 +93,10 @@ jobs:
           VIEW_HTML="/tmp/cf/view.html"
           curl -fsSL "https://ci.android.com/builds/submitted/${BID}/${TARGET}/1/view/${IMG_ZIP}" -o "$VIEW_HTML"
           # The artifact-viewer page embeds a signed storage.googleapis.com URL
-          SIGNED_URL=$(grep -oE 'https://storage\.googleapis\.com/android-build/[^"\\]+' "$VIEW_HTML" \
-                       | sed 's/\\u0026/\&/g' | head -1)
+          # with JSON-escaped ampersands (\u0026). Decode BEFORE extracting so
+          # the full query string (Expires, Signature, ...) is captured.
+          python3 -c "import sys,pathlib; p=pathlib.Path('$VIEW_HTML'); p.write_text(p.read_text().replace('\\\\u0026','&'))"
+          SIGNED_URL=$(grep -oE 'https://storage\.googleapis\.com/android-build/[^"'"'"' <>]+' "$VIEW_HTML" | head -1)
           test -n "$SIGNED_URL"
           echo "Signed URL host: $(echo "$SIGNED_URL" | cut -d/ -f1-3)"
           curl -fL --retry 5 --retry-delay 5 -o "$IMG_ZIP" "$SIGNED_URL"
