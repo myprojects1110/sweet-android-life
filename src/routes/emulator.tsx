@@ -4,6 +4,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import linuxImage from "../assets/linux.iso.asset.json";
 import seabios from "../assets/seabios.bin.asset.json";
 import vgabios from "../assets/vgabios.bin.asset.json";
+import {
+  ensureImages,
+  fetchManifest,
+  readCached,
+  type Progress,
+} from "../lib/opfs-images";
 
 export const Route = createFileRoute("/emulator")({
   head: () => ({
@@ -33,6 +39,8 @@ const BIOS = seabios.url;
 const VGA_BIOS = vgabios.url;
 // Small bootable Linux ISO, served same-origin from Lovable's CDN (no CORS issues).
 const DEFAULT_IMAGE = linuxImage.url;
+const DEFAULT_ANDROID_MANIFEST =
+  "https://huggingface.co/datasets/ervjn455/android-17-wasm-images/resolve/main/manifest.json";
 
 declare global {
   interface Window {
@@ -184,9 +192,9 @@ function EmulatorInner() {
   //   virt      — modern virt board with virtio-{blk,net,gpu,input}, for AOSP
   //               Cuttlefish (aosp_cf_arm64_phone). Needs external image hosting.
   const [armProfile, setArmProfile] = useState<"raspi3ap" | "virt">("raspi3ap");
-  const [androidKernelUrl, setAndroidKernelUrl] = useState("");
-  const [androidInitrdUrl, setAndroidInitrdUrl] = useState("");
-  const [androidSystemUrl, setAndroidSystemUrl] = useState("");
+  const [androidManifestUrl, setAndroidManifestUrl] = useState(
+    DEFAULT_ANDROID_MANIFEST,
+  );
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
@@ -275,17 +283,21 @@ function EmulatorInner() {
           armProfile === "virt"
             ? [
                 // Stage 3: modern virt board for AOSP Cuttlefish (Android 17).
-                // Kernel / initrd / system.img must be hosted (CORS-enabled)
-                // and downloaded into the guest FS by load.js — for large
-                // system.img we'll swap this for an OPFS-backed block backend.
+                // Cuttlefish images are streamed into OPFS from the manifest
+                // and mounted into Emscripten MEMFS at /pack/<name> below.
+                // NOTE: the manifest gives boot.img / vendor_boot.img /
+                // super.img / vbmeta*.img / userdata.img — kernel + ramdisk
+                // still need to be extracted from boot.img before QEMU can
+                // consume them. Wiring is here; extraction is the next PR.
                 "-machine", "virt,gic-version=3",
                 "-cpu", "cortex-a53",
                 "-smp", "2",
                 "-m", "2048",
-                "-kernel", "/pack/android-kernel",
-                "-initrd", "/pack/android-initrd.img",
-                "-drive", "file=/pack/android-system.img,format=raw,if=none,id=sys",
-                "-device", "virtio-blk-pci,drive=sys",
+                "-kernel", "/pack/boot.img",
+                "-drive", "file=/pack/super.img,format=raw,if=none,id=super",
+                "-device", "virtio-blk-pci,drive=super",
+                "-drive", "file=/pack/userdata.img,format=raw,if=none,id=data",
+                "-device", "virtio-blk-pci,drive=data",
                 "-device", "virtio-gpu-pci",
                 "-device", "virtio-tablet-pci",
                 "-device", "virtio-keyboard-pci",
@@ -310,28 +322,75 @@ function EmulatorInner() {
                 "-append",
                 "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
               ];
+        let cachedAndroidImages: Awaited<ReturnType<typeof ensureImages>> = [];
         if (armProfile === "virt") {
-          const missing = [
-            ["kernel", androidKernelUrl],
-            ["initrd", androidInitrdUrl],
-            ["system.img", androidSystemUrl],
-          ].filter(([, v]) => !v.trim());
-          if (missing.length) {
-            throw new Error(
-              `virt profile needs Android image URLs: ${missing.map((m) => m[0]).join(", ")}`,
-            );
+          if (!androidManifestUrl.trim()) {
+            throw new Error("virt profile needs an Android manifest URL.");
           }
           appendSerial(
-            `[harness] virt/Android profile — NOTE: images not yet streamed into guest FS.\n` +
-              `[harness] The QEMU-Wasm .data package ships only raspi3ap files today.\n` +
-              `[harness] Next step: fetch these URLs into OPFS and mount as a virtual disk.\n` +
-              `  kernel : ${androidKernelUrl}\n  initrd : ${androidInitrdUrl}\n  system : ${androidSystemUrl}\n`,
+            `[harness] fetching manifest ${androidManifestUrl} …\n`,
           );
+          const manifest = await fetchManifest(androidManifestUrl);
+          appendSerial(
+            `[harness] manifest build_id=${manifest.build_id} target=${manifest.target ?? "?"} files=${manifest.files.length}\n`,
+          );
+          const baseImages = androidManifestUrl.replace(/manifest\.json(?:\?.*)?$/, "");
+          let lastLog = 0;
+          const onProgress = (p: Progress) => {
+            if (p.phase === "cached") {
+              appendSerial(`[opfs] ✓ cached ${p.file} (${p.total} bytes)\n`);
+              return;
+            }
+            if (p.phase === "ready") {
+              appendSerial(`[opfs] ✓ downloaded ${p.file}\n`);
+              return;
+            }
+            if (p.phase === "verify") {
+              appendSerial(`[opfs] verifying sha256 for ${p.file} …\n`);
+              return;
+            }
+            if (p.phase === "check") {
+              appendSerial(`[opfs] checking ${p.file} …\n`);
+              lastLog = 0;
+              return;
+            }
+            const now = performance.now();
+            if (now - lastLog > 500) {
+              lastLog = now;
+              const pct = p.total ? ((p.received / p.total) * 100).toFixed(1) : "?";
+              appendSerial(
+                `[opfs]   ${p.file}: ${(p.received / (1024 * 1024)).toFixed(1)} / ${(p.total / (1024 * 1024)).toFixed(1)} MiB (${pct}%)\n`,
+              );
+            }
+          };
+          cachedAndroidImages = await ensureImages(manifest, baseImages, onProgress);
+          appendSerial(
+            `[harness] all ${cachedAndroidImages.length} images ready in OPFS.\n` +
+              `[harness] NOTE: QEMU expects a raw kernel + initramfs; boot.img/vendor_boot.img still\n` +
+              `[harness]       need Android-boot-image unpacking before -kernel/-initrd point at real bytes.\n`,
+          );
+        }
+
+        type EmscriptenFS = {
+          mkdirTree: (path: string) => void;
+          writeFile: (path: string, data: Uint8Array) => void;
+        };
+        const preRun: Array<(mod: { FS: EmscriptenFS }) => void> = [];
+        if (cachedAndroidImages.length) {
+          preRun.push(async (mod) => {
+            mod.FS.mkdirTree("/pack");
+            for (const img of cachedAndroidImages) {
+              appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
+              const bytes = await readCached(img);
+              mod.FS.writeFile("/pack/" + img.file.name, bytes);
+            }
+          });
         }
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
           pty,
+          preRun,
           print: (line: string) => appendSerial(line + "\n"),
           printErr: (line: string) => appendSerial(line + "\n"),
           locateFile: (p: string) =>
@@ -394,7 +453,7 @@ function EmulatorInner() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [arch, qemuBase, imageUrl, imageKind, armProfile, androidKernelUrl, androidInitrdUrl, androidSystemUrl, appendSerial]);
+  }, [arch, qemuBase, imageUrl, imageKind, armProfile, androidManifestUrl, appendSerial]);
 
   const stop = useCallback(() => {
     emuRef.current?.destroy?.();
@@ -521,27 +580,15 @@ function EmulatorInner() {
                 {armProfile === "virt" && (
                   <div className="grid gap-2 rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-3">
                     <p className="text-xs text-amber-500">
-                      Cuttlefish (aosp_cf_arm64_phone) image URLs — must be
-                      CORS-enabled. GitHub Pages can&apos;t host system.img
-                      (2–4&nbsp;GB); use R2 / S3 / a CDN.
+                      Cuttlefish manifest URL. Images are streamed once from
+                      Hugging Face into OPFS, sha256-verified, then mounted
+                      into the guest FS on every boot.
                     </p>
                     <input
-                      value={androidKernelUrl}
-                      onChange={(e) => setAndroidKernelUrl(e.target.value)}
+                      value={androidManifestUrl}
+                      onChange={(e) => setAndroidManifestUrl(e.target.value)}
                       className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="kernel URL (aarch64 Android kernel)"
-                    />
-                    <input
-                      value={androidInitrdUrl}
-                      onChange={(e) => setAndroidInitrdUrl(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="initramfs.img URL"
-                    />
-                    <input
-                      value={androidSystemUrl}
-                      onChange={(e) => setAndroidSystemUrl(e.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
-                      placeholder="system.img URL (large — will need OPFS streaming)"
+                      placeholder="https://…/manifest.json"
                     />
                   </div>
                 )}
