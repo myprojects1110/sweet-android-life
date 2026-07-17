@@ -363,9 +363,7 @@ function EmulatorInner() {
           };
           cachedAndroidImages = await ensureImages(manifest, baseImages, onProgress);
           appendSerial(
-            `[harness] all ${cachedAndroidImages.length} images ready in OPFS.\n` +
-              `[harness] NOTE: QEMU expects a raw kernel + initramfs; boot.img/vendor_boot.img still\n` +
-              `[harness]       need Android-boot-image unpacking before -kernel/-initrd point at real bytes.\n`,
+            `[harness] all ${cachedAndroidImages.length} images ready in OPFS.\n`,
           );
         }
 
@@ -377,10 +375,40 @@ function EmulatorInner() {
         if (cachedAndroidImages.length) {
           preRun.push(async (mod) => {
             mod.FS.mkdirTree("/pack");
+            const byName = new Map<string, typeof cachedAndroidImages[number]>();
+            for (const img of cachedAndroidImages) byName.set(img.file.name, img);
             for (const img of cachedAndroidImages) {
               appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
               const bytes = await readCached(img);
               mod.FS.writeFile("/pack/" + img.file.name, bytes);
+            }
+            // Unpack boot.img → kernel + generic ramdisk, vendor_boot.img →
+            // vendor ramdisk. Feed the concatenated cpio(.gz) blob to -initrd.
+            const boot = byName.get("boot.img");
+            const vboot = byName.get("vendor_boot.img");
+            if (boot) {
+              const { parseBootImage, parseVendorBootImage, combineRamdisks } =
+                await import("../lib/android-boot");
+              const bootParts = parseBootImage(await readCached(boot));
+              appendSerial(
+                `[boot] boot.img v${bootParts.headerVersion}: kernel=${bootParts.kernel.length} ramdisk=${bootParts.ramdisk.length}\n`,
+              );
+              mod.FS.writeFile("/pack/_kernel", bootParts.kernel);
+              let ramdisk = bootParts.ramdisk;
+              if (vboot) {
+                const vp = parseVendorBootImage(await readCached(vboot));
+                appendSerial(
+                  `[boot] vendor_boot.img v${vp.headerVersion}: vendor_ramdisk=${vp.vendorRamdisk.length} dtb=${vp.dtb.length} bootconfig=${vp.bootconfig.length}\n`,
+                );
+                ramdisk = combineRamdisks(vp.vendorRamdisk, ramdisk);
+                if (vp.dtb.length) mod.FS.writeFile("/pack/_dtb", vp.dtb);
+                if (vp.bootconfig.length)
+                  mod.FS.writeFile("/pack/_bootconfig", vp.bootconfig);
+              }
+              mod.FS.writeFile("/pack/_ramdisk", ramdisk);
+              appendSerial(
+                `[boot] wrote /pack/_kernel (${bootParts.kernel.length}) and /pack/_ramdisk (${ramdisk.length})\n`,
+              );
             }
           });
         }
