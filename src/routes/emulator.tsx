@@ -192,9 +192,9 @@ function EmulatorInner() {
   //   virt      — modern virt board with virtio-{blk,net,gpu,input}, for AOSP
   //               Cuttlefish (aosp_cf_arm64_phone). Needs external image hosting.
   const [armProfile, setArmProfile] = useState<"raspi3ap" | "virt">("raspi3ap");
-  const [androidKernelUrl, setAndroidKernelUrl] = useState("");
-  const [androidInitrdUrl, setAndroidInitrdUrl] = useState("");
-  const [androidSystemUrl, setAndroidSystemUrl] = useState("");
+  const [androidManifestUrl, setAndroidManifestUrl] = useState(
+    DEFAULT_ANDROID_MANIFEST,
+  );
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
