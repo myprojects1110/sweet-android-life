@@ -283,17 +283,15 @@ function EmulatorInner() {
           armProfile === "virt"
             ? [
                 // Stage 3: modern virt board for AOSP Cuttlefish (Android 17).
-                // Cuttlefish images are streamed into OPFS from the manifest
-                // and mounted into Emscripten MEMFS at /pack/<name> below.
-                // NOTE: the manifest gives boot.img / vendor_boot.img /
-                // super.img / vbmeta*.img / userdata.img — kernel + ramdisk
-                // still need to be extracted from boot.img before QEMU can
-                // consume them. Wiring is here; extraction is the next PR.
+                // Images stream from HF → OPFS → MEMFS at /pack/<name>, and
+                // boot.img / vendor_boot.img are unpacked at boot time into
+                // /pack/_kernel and /pack/_ramdisk (see preRun below).
                 "-machine", "virt,gic-version=3",
                 "-cpu", "cortex-a53",
                 "-smp", "2",
                 "-m", "2048",
-                "-kernel", "/pack/boot.img",
+                "-kernel", "/pack/_kernel",
+                "-initrd", "/pack/_ramdisk",
                 "-drive", "file=/pack/super.img,format=raw,if=none,id=super",
                 "-device", "virtio-blk-pci,drive=super",
                 "-drive", "file=/pack/userdata.img,format=raw,if=none,id=data",
