@@ -179,6 +179,14 @@ function EmulatorInner() {
   // Must contain the emscripten glue (out.js) + .wasm produced by a
   // qemu-wasm (TCG→WASM JIT) build. Left blank until an artifact is hosted.
   const [qemuBase, setQemuBase] = useState(DEFAULT_QEMU_BASE);
+  // ARM64 boot profile:
+  //   raspi3ap  — the working Alpine boot bundled into the QEMU-Wasm .data image
+  //   virt      — modern virt board with virtio-{blk,net,gpu,input}, for AOSP
+  //               Cuttlefish (aosp_cf_arm64_phone). Needs external image hosting.
+  const [armProfile, setArmProfile] = useState<"raspi3ap" | "virt">("raspi3ap");
+  const [androidKernelUrl, setAndroidKernelUrl] = useState("");
+  const [androidInitrdUrl, setAndroidInitrdUrl] = useState("");
+  const [androidSystemUrl, setAndroidSystemUrl] = useState("");
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
@@ -263,28 +271,65 @@ function EmulatorInner() {
         appendSerial(
           `[harness] loading ARM64 QEMU-Wasm package from ${base}load.js …\n`,
         );
+        const qemuArgs =
+          armProfile === "virt"
+            ? [
+                // Stage 3: modern virt board for AOSP Cuttlefish (Android 17).
+                // Kernel / initrd / system.img must be hosted (CORS-enabled)
+                // and downloaded into the guest FS by load.js — for large
+                // system.img we'll swap this for an OPFS-backed block backend.
+                "-machine", "virt,gic-version=3",
+                "-cpu", "cortex-a53",
+                "-smp", "2",
+                "-m", "2048",
+                "-kernel", "/pack/android-kernel",
+                "-initrd", "/pack/android-initrd.img",
+                "-drive", "file=/pack/android-system.img,format=raw,if=none,id=sys",
+                "-device", "virtio-blk-pci,drive=sys",
+                "-device", "virtio-gpu-pci",
+                "-device", "virtio-tablet-pci",
+                "-device", "virtio-keyboard-pci",
+                "-netdev", "user,id=n0",
+                "-device", "virtio-net-pci,netdev=n0",
+                "-append",
+                "console=ttyAMA0 androidboot.hardware=cutf_cvm androidboot.selinux=permissive rw",
+                "-nographic",
+                "-accel", "tcg,tb-size=500",
+              ]
+            : [
+                // Stage 2 (working): raspi3ap + Alpine rootfs baked into .data
+                "-nic", "none",
+                "-M", "raspi3ap",
+                "-nographic",
+                "-m", "512M",
+                "-accel", "tcg,tb-size=500",
+                "-smp", "4",
+                "-dtb", "/pack/bcm2710-rpi-3-b-plus.dtb",
+                "-kernel", "/pack/kernel8.img",
+                "-drive", "file=/pack/rootfs.bin,format=raw,if=sd",
+                "-append",
+                "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
+              ];
+        if (armProfile === "virt") {
+          const missing = [
+            ["kernel", androidKernelUrl],
+            ["initrd", androidInitrdUrl],
+            ["system.img", androidSystemUrl],
+          ].filter(([, v]) => !v.trim());
+          if (missing.length) {
+            throw new Error(
+              `virt profile needs Android image URLs: ${missing.map((m) => m[0]).join(", ")}`,
+            );
+          }
+          appendSerial(
+            `[harness] virt/Android profile — NOTE: images not yet streamed into guest FS.\n` +
+              `[harness] The QEMU-Wasm .data package ships only raspi3ap files today.\n` +
+              `[harness] Next step: fetch these URLs into OPFS and mount as a virtual disk.\n` +
+              `  kernel : ${androidKernelUrl}\n  initrd : ${androidInitrdUrl}\n  system : ${androidSystemUrl}\n`,
+          );
+        }
         const moduleConfig: EmscriptenModuleConfig = {
-          arguments: [
-            "-nic",
-            "none",
-            "-M",
-            "raspi3ap",
-            "-nographic",
-            "-m",
-            "512M",
-            "-accel",
-            "tcg,tb-size=500",
-            "-smp",
-            "4",
-            "-dtb",
-            "/pack/bcm2710-rpi-3-b-plus.dtb",
-            "-kernel",
-            "/pack/kernel8.img",
-            "-drive",
-            "file=/pack/rootfs.bin,format=raw,if=sd",
-            "-append",
-            "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
-          ],
+          arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
           pty,
           print: (line: string) => appendSerial(line + "\n"),
@@ -349,7 +394,7 @@ function EmulatorInner() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [arch, qemuBase, imageUrl, imageKind, appendSerial]);
+  }, [arch, qemuBase, imageUrl, imageKind, armProfile, androidKernelUrl, androidInitrdUrl, androidSystemUrl, appendSerial]);
 
   const stop = useCallback(() => {
     emuRef.current?.destroy?.();
@@ -446,17 +491,60 @@ function EmulatorInner() {
                 </div>
               </>
             ) : (
-              <div className="flex-1 min-w-[260px]">
-                <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  QEMU-Wasm artifact base URL (CORS-enabled; contains out.js +
-                  .wasm)
-                </label>
-                <input
-                  value={qemuBase}
-                  onChange={(e) => setQemuBase(e.target.value)}
-                  className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
-                  placeholder="https://your-host/qemu-aarch64/"
-                />
+              <div className="flex w-full flex-col gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {(["raspi3ap", "virt"] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setArmProfile(p)}
+                      className={`rounded-md border px-3 py-1.5 text-xs font-mono transition-colors ${
+                        armProfile === p
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-input bg-background hover:bg-accent"
+                      }`}
+                    >
+                      {p === "raspi3ap" ? "raspi3ap · Alpine ✓" : "virt · Android 17 ⚙"}
+                    </button>
+                  ))}
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-muted-foreground">
+                    QEMU-Wasm artifact base URL (CORS-enabled; out.js + .wasm)
+                  </label>
+                  <input
+                    value={qemuBase}
+                    onChange={(e) => setQemuBase(e.target.value)}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+                    placeholder="https://your-host/qemu-aarch64/"
+                  />
+                </div>
+                {armProfile === "virt" && (
+                  <div className="grid gap-2 rounded-md border border-dashed border-amber-500/40 bg-amber-500/5 p-3">
+                    <p className="text-xs text-amber-500">
+                      Cuttlefish (aosp_cf_arm64_phone) image URLs — must be
+                      CORS-enabled. GitHub Pages can&apos;t host system.img
+                      (2–4&nbsp;GB); use R2 / S3 / a CDN.
+                    </p>
+                    <input
+                      value={androidKernelUrl}
+                      onChange={(e) => setAndroidKernelUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="kernel URL (aarch64 Android kernel)"
+                    />
+                    <input
+                      value={androidInitrdUrl}
+                      onChange={(e) => setAndroidInitrdUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="initramfs.img URL"
+                    />
+                    <input
+                      value={androidSystemUrl}
+                      onChange={(e) => setAndroidSystemUrl(e.target.value)}
+                      className="w-full rounded-md border border-input bg-background px-3 py-2 text-xs font-mono"
+                      placeholder="system.img URL (large — will need OPFS streaming)"
+                    />
+                  </div>
+                )}
               </div>
             )}
             <div className="flex gap-2">
