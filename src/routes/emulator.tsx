@@ -4,6 +4,12 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import linuxImage from "../assets/linux.iso.asset.json";
 import seabios from "../assets/seabios.bin.asset.json";
 import vgabios from "../assets/vgabios.bin.asset.json";
+import {
+  ensureImages,
+  fetchManifest,
+  readCached,
+  type Progress,
+} from "../lib/opfs-images";
 
 export const Route = createFileRoute("/emulator")({
   head: () => ({
