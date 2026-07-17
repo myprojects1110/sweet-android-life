@@ -161,7 +161,7 @@ jobs:
             [ -f "$f" ] && cp "$f" /tmp/upload/ || true
           done
           ls -lh /tmp/upload
-          huggingface-cli upload "${HF_REPO}" /tmp/upload . \
+          hf upload "${HF_REPO}" /tmp/upload . \
             --repo-type "${HF_REPO_TYPE}" \
             --commit-message "cuttlefish ${{ steps.resolve.outputs.build_id }} (${{ steps.resolve.outputs.target }})"
 
