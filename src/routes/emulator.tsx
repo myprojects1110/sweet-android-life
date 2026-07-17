@@ -232,9 +232,14 @@ function EmulatorInner() {
         }
         if (!window.crossOriginIsolated || typeof SharedArrayBuffer === "undefined") {
           await installCrossOriginIsolationServiceWorker();
-          throw new Error(
-            "Threaded WebAssembly is being prepared. If the page does not reload automatically, hard-refresh it and press Boot again.",
+          appendSerial(
+            "[harness] enabling cross-origin isolation (COOP/COEP) — reloading page…\n",
           );
+          // The COI service worker triggers a reload itself on first install,
+          // but force one here in case it's already registered from a prior visit
+          // and the headers just aren't applied to this navigation yet.
+          setTimeout(() => window.location.reload(), 300);
+          return;
         }
         arm64PtyRef.current?.dispose();
         const pty = createTextAreaPty(appendSerial);
