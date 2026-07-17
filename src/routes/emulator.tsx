@@ -408,23 +408,43 @@ function EmulatorInner() {
             (m.FS as EmscriptenFS | undefined) ??
             (g.FS as EmscriptenFS | undefined) ??
             ((): EmscriptenFS | undefined => {
-              // Fallback: some Emscripten builds only expose FS_* helpers on Module.
-              const mk = m.FS_mkdirTree as ((p: string) => void) | undefined;
-              const wf = m.FS_createDataFile as
+              // Fallback: this Emscripten build exposes only FS_* helpers on Module
+              // (e.g. FS_createPath, FS_createDataFile, FS_unlink).
+              const createPath = m.FS_createPath as
+                | ((parent: string, path: string, canRead: boolean, canWrite: boolean) => void)
+                | undefined;
+              const createDataFile = m.FS_createDataFile as
                 | ((parent: string, name: string, data: Uint8Array, canRead: boolean, canWrite: boolean, canOwn: boolean) => void)
                 | undefined;
-              if (!mk || !wf) return undefined;
+              const unlink = m.FS_unlink as ((path: string) => void) | undefined;
+              if (!createPath || !createDataFile) return undefined;
+              const mkdirTree = (p: string) => {
+                const parts = p.split("/").filter(Boolean);
+                let parent = "/";
+                for (const seg of parts) {
+                  try {
+                    createPath(parent, seg, true, true);
+                  } catch {
+                    /* already exists */
+                  }
+                  parent = parent === "/" ? "/" + seg : parent + "/" + seg;
+                }
+              };
+              const writeFile = (path: string, data: Uint8Array) => {
+                const i = path.lastIndexOf("/");
+                const parent = path.slice(0, i) || "/";
+                const name = path.slice(i + 1);
+                mkdirTree(parent);
+                if (unlink) {
+                  try { unlink(path); } catch { /* not present */ }
+                }
+                createDataFile(parent, name, data, true, true, true);
+              };
               return {
-                mkdirTree: mk,
-                writeFile: (path: string, data: Uint8Array) => {
-                  const i = path.lastIndexOf("/");
-                  const parent = path.slice(0, i) || "/";
-                  const name = path.slice(i + 1);
-                  mk(parent);
-                  wf(parent, name, data, true, true, true);
-                },
+                mkdirTree,
+                writeFile,
                 mount: () => {
-                  throw new Error("FS.mount unavailable (FS not exported)");
+                  throw new Error("FS.mount unavailable (Module.FS not exported by this QEMU-Wasm build)");
                 },
                 isDir: () => false,
                 isFile: () => false,
