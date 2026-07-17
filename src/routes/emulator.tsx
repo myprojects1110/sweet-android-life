@@ -179,6 +179,14 @@ function EmulatorInner() {
   // Must contain the emscripten glue (out.js) + .wasm produced by a
   // qemu-wasm (TCG→WASM JIT) build. Left blank until an artifact is hosted.
   const [qemuBase, setQemuBase] = useState(DEFAULT_QEMU_BASE);
+  // ARM64 boot profile:
+  //   raspi3ap  — the working Alpine boot bundled into the QEMU-Wasm .data image
+  //   virt      — modern virt board with virtio-{blk,net,gpu,input}, for AOSP
+  //               Cuttlefish (aosp_cf_arm64_phone). Needs external image hosting.
+  const [armProfile, setArmProfile] = useState<"raspi3ap" | "virt">("raspi3ap");
+  const [androidKernelUrl, setAndroidKernelUrl] = useState("");
+  const [androidInitrdUrl, setAndroidInitrdUrl] = useState("");
+  const [androidSystemUrl, setAndroidSystemUrl] = useState("");
   const [serial, setSerial] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ frames: 0 });
