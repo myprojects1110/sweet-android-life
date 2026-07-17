@@ -408,11 +408,6 @@ function EmulatorInner() {
             mod.FS.mkdirTree("/blk");
             const byName = new Map<string, typeof cachedAndroidImages[number]>();
             for (const img of cachedAndroidImages) byName.set(img.file.name, img);
-            const buildId = cachedAndroidImages[0]
-              ? // opfs path shape from opfs-images.ts: /cuttlefish/<build_id>/<name>
-                undefined
-              : undefined;
-            void buildId;
             for (const img of cachedAndroidImages) {
               if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
                 // Path inside OPFS matches opfs-images.ts layout.
