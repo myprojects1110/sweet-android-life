@@ -453,7 +453,7 @@ function EmulatorInner() {
       setError(e instanceof Error ? e.message : String(e));
       setStatus("error");
     }
-  }, [arch, qemuBase, imageUrl, imageKind, armProfile, androidKernelUrl, androidInitrdUrl, androidSystemUrl, appendSerial]);
+  }, [arch, qemuBase, imageUrl, imageKind, armProfile, androidManifestUrl, appendSerial]);
 
   const stop = useCallback(() => {
     emuRef.current?.destroy?.();
