@@ -10,6 +10,12 @@ import {
   readCached,
   type Progress,
 } from "../lib/opfs-images";
+import { getOpfsBlockClient } from "../lib/opfs-block-bridge";
+import { makeOpfsBlockFS, installOpfsBlockFsRef } from "../lib/opfs-block-fs";
+
+// Cuttlefish files that must NEVER be loaded into MEMFS — mount via OPFS
+// block FS instead. Anything larger than a few MiB belongs here.
+const BLOCK_MOUNTED = new Set(["super.img", "userdata.img"]);
 
 export const Route = createFileRoute("/emulator")({
   head: () => ({
@@ -292,9 +298,9 @@ function EmulatorInner() {
                 "-m", "2048",
                 "-kernel", "/pack/_kernel",
                 "-initrd", "/pack/_ramdisk",
-                "-drive", "file=/pack/super.img,format=raw,if=none,id=super",
+                "-drive", "file=/blk/super.img,format=raw,if=none,id=super,readonly=on",
                 "-device", "virtio-blk-pci,drive=super",
-                "-drive", "file=/pack/userdata.img,format=raw,if=none,id=data",
+                "-drive", "file=/blk/userdata.img,format=raw,if=none,id=data,readonly=on",
                 "-device", "virtio-blk-pci,drive=data",
                 "-device", "virtio-gpu-pci",
                 "-device", "virtio-tablet-pci",
@@ -321,6 +327,7 @@ function EmulatorInner() {
                 "earlycon=pl011,0x3f201000 console=ttyAMA0,115200 loglevel=6 initcall_blacklist=bcm2835_pm_driver_init root=/dev/mmcblk0 rootfstype=ext4 rootwait no_console_suspend",
               ];
         let cachedAndroidImages: Awaited<ReturnType<typeof ensureImages>> = [];
+        let androidBuildId = "";
         if (armProfile === "virt") {
           if (!androidManifestUrl.trim()) {
             throw new Error("virt profile needs an Android manifest URL.");
@@ -329,6 +336,7 @@ function EmulatorInner() {
             `[harness] fetching manifest ${androidManifestUrl} …\n`,
           );
           const manifest = await fetchManifest(androidManifestUrl);
+          androidBuildId = manifest.build_id;
           appendSerial(
             `[harness] manifest build_id=${manifest.build_id} target=${manifest.target ?? "?"} files=${manifest.files.length}\n`,
           );
@@ -370,18 +378,73 @@ function EmulatorInner() {
         type EmscriptenFS = {
           mkdirTree: (path: string) => void;
           writeFile: (path: string, data: Uint8Array) => void;
+          mount: (fs: unknown, opts: unknown, mountpoint: string) => void;
+          isDir: (mode: number) => boolean;
+          isFile: (mode: number) => boolean;
+          createNode: unknown;
+          ErrnoError: unknown;
         };
-        const preRun: Array<(mod: { FS: EmscriptenFS }) => void> = [];
+
+        // Pre-open the OPFS block bridge on the main thread; the client
+        // object (which only touches the SAB) is safely usable from the
+        // pthread that eventually calls into our custom FS.
+        let blockClient: Awaited<ReturnType<typeof getOpfsBlockClient>> | null = null;
+        const blockEntries: { name: string; opfsPath: string }[] = [];
+        if (cachedAndroidImages.length) {
+          try {
+            blockClient = await getOpfsBlockClient();
+            appendSerial(`[opfs-block] worker ready (SAB ${blockClient.sab.byteLength} bytes)\n`);
+          } catch (e) {
+            appendSerial(
+              `[opfs-block] failed to init: ${e instanceof Error ? e.message : String(e)}\n`,
+            );
+          }
+        }
+
+        const preRun: Array<(mod: { FS: EmscriptenFS }) => void | Promise<void>> = [];
         if (cachedAndroidImages.length) {
           preRun.push(async (mod) => {
             mod.FS.mkdirTree("/pack");
+            mod.FS.mkdirTree("/blk");
             const byName = new Map<string, typeof cachedAndroidImages[number]>();
             for (const img of cachedAndroidImages) byName.set(img.file.name, img);
             for (const img of cachedAndroidImages) {
+              if (BLOCK_MOUNTED.has(img.file.name) && blockClient) {
+                // Path inside OPFS matches opfs-images.ts layout.
+                const opfsPath = `cuttlefish/${androidBuildId}/${img.file.name}`;
+                blockEntries.push({ name: img.file.name, opfsPath });
+                appendSerial(
+                  `[fs] mounting /blk/${img.file.name} via OPFS block FS (${img.file.size} bytes, zero MEMFS)\n`,
+                );
+                continue;
+              }
               appendSerial(`[fs] mounting /pack/${img.file.name} (${img.file.size} bytes)\n`);
               const bytes = await readCached(img);
               mod.FS.writeFile("/pack/" + img.file.name, bytes);
             }
+
+            if (blockClient && blockEntries.length) {
+              installOpfsBlockFsRef({
+                createNode: mod.FS.createNode as never,
+                isDir: mod.FS.isDir,
+                isFile: mod.FS.isFile,
+                ErrnoError: mod.FS.ErrnoError as never,
+              });
+              try {
+                mod.FS.mount(makeOpfsBlockFS(blockClient), { entries: blockEntries }, "/blk");
+                appendSerial(
+                  `[opfs-block] mounted at /blk with ${blockEntries.length} file(s)\n`,
+                );
+              } catch (e) {
+                appendSerial(
+                  `[opfs-block] FS.mount failed: ${e instanceof Error ? e.message : String(e)}\n` +
+                    `[opfs-block] The QEMU-Wasm Emscripten build may proxy FS ops to the main thread,\n` +
+                    `[opfs-block] where Atomics.wait throws. A rebuilt QEMU with a custom block driver\n` +
+                    `[opfs-block] hitting SyncAccessHandle from the QEMU pthread is required to fix this.\n`,
+                );
+              }
+            }
+
             // Unpack boot.img → kernel + generic ramdisk, vendor_boot.img →
             // vendor ramdisk. Feed the concatenated cpio(.gz) blob to -initrd.
             const boot = byName.get("boot.img");
@@ -412,6 +475,7 @@ function EmulatorInner() {
             }
           });
         }
+
         const moduleConfig: EmscriptenModuleConfig = {
           arguments: qemuArgs,
           mainScriptUrlOrBlob: base + "out.js",
