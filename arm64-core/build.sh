@@ -81,7 +81,7 @@ docker build --output=type=local,dest="${TMPDIR}/pack" \
 ALPINE_VERSION="${ALPINE_VERSION:-3.20}"
 ALPINE_PATCH="${ALPINE_PATCH:-3.20.3}"
 ALPINE_ROOTFS_URL="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION}/releases/aarch64/alpine-minirootfs-${ALPINE_PATCH}-aarch64.tar.gz"
-ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-192}"
+ROOTFS_SIZE_MB="${ROOTFS_SIZE_MB:-256}"  # QEMU raspi3ap SD size MUST be a power of 2 MiB
 
 docker run --rm -v "${TMPDIR}/pack":/pack alpine:latest /bin/sh -euxc "
   apk add --no-cache curl tar e2fsprogs
